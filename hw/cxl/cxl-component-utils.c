@@ -153,7 +153,7 @@ static void ras_init_common(uint32_t *reg_state, uint32_t *write_msk)
     reg_state[R_CXL_RAS_COR_ERR_MASK] = 0x7f;
     write_msk[R_CXL_RAS_COR_ERR_MASK] = 0x7f;
     /* CXL switches and devices must set */
-    reg_state[R_CXL_RAS_ERR_CAP_CTRL] = 0x00;
+    reg_state[R_CXL_RAS_ERR_CAP_CTRL] = 0x200;
 }
 
 static void hdm_init_common(uint32_t *reg_state, uint32_t *write_msk,
