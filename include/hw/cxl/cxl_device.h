@@ -121,6 +121,8 @@ struct cxl_event_log {
     uint16_t overflow_err_count;
     uint64_t first_overflow_timestamp;
     uint64_t last_overflow_timestamp;
+    bool irq_enabled;
+    int irq_vec;
     QemuMutex lock;
     QSIMPLEQ_HEAD(, CXLEvent) events;
 };
@@ -344,7 +346,7 @@ MemTxResult cxl_type3_read(PCIDevice *d, hwaddr host_addr, uint64_t *data,
 MemTxResult cxl_type3_write(PCIDevice *d, hwaddr host_addr, uint64_t data,
                             unsigned size, MemTxAttrs attrs);
 
-void cxl_event_init(CXLDeviceState *cxlds);
+void cxl_event_init(CXLDeviceState *cxlds, int start_msg_num);
 bool cxl_event_insert(CXLDeviceState *cxlds,
                       enum cxl_event_log_type log_type,
                       struct cxl_event_record_raw *event);
@@ -354,5 +356,7 @@ CXLRetCode cxl_event_get_records(CXLDeviceState *cxlds,
                                  uint16_t *len);
 CXLRetCode cxl_event_clear_records(CXLDeviceState *cxlds,
                                    struct cxl_clear_event_payload *pl);
+
+void cxl_event_irq_assert(CXLType3Dev *ct3d);
 
 #endif
