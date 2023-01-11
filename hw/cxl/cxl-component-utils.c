@@ -142,12 +142,14 @@ static void ras_init_common(uint32_t *reg_state, uint32_t *write_msk)
      * be handled as RO.
      */
     reg_state[R_CXL_RAS_UNC_ERR_STATUS] = 0;
+    write_msk[R_CXL_RAS_UNC_ERR_STATUS] = 0x1cfff;
     /* Bits 12-13 and 17-31 reserved in CXL 2.0 */
     reg_state[R_CXL_RAS_UNC_ERR_MASK] = 0x1cfff;
     write_msk[R_CXL_RAS_UNC_ERR_MASK] = 0x1cfff;
     reg_state[R_CXL_RAS_UNC_ERR_SEVERITY] = 0x1cfff;
     write_msk[R_CXL_RAS_UNC_ERR_SEVERITY] = 0x1cfff;
     reg_state[R_CXL_RAS_COR_ERR_STATUS] = 0;
+    write_msk[R_CXL_RAS_COR_ERR_STATUS] = 0x7f;
     reg_state[R_CXL_RAS_COR_ERR_MASK] = 0x7f;
     write_msk[R_CXL_RAS_COR_ERR_MASK] = 0x7f;
     /* CXL switches and devices must set */
