@@ -922,6 +922,100 @@ void qmp_cxl_inject_correctable_error(const char *path, CxlCorErrorType type,
     pcie_aer_inject_error(PCI_DEVICE(obj), &err);
 }
 
+static void cxl_assign_event_header(struct cxl_event_record_hdr *hdr,
+                                    const QemuUUID *uuid, uint8_t flags,
+                                    uint8_t length)
+{
+    hdr->flags[0] = flags;
+    hdr->length = length;
+    memcpy(&hdr->id, uuid, sizeof(hdr->id));
+    hdr->timestamp = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
+static const QemuUUID gen_media_uuid = {
+    .data = UUID(0xfbcd0a77, 0xc260, 0x417f,
+                 0x85, 0xa9, 0x08, 0x8b, 0x16, 0x21, 0xeb, 0xa6),
+};
+
+#define CXL_GMER_VALID_CHANNEL                          BIT(0)
+#define CXL_GMER_VALID_RANK                             BIT(1)
+#define CXL_GMER_VALID_DEVICE                           BIT(2)
+#define CXL_GMER_VALID_COMPONENT                        BIT(3)
+
+/*
+ * For channel, rank, and device; any value inside of the fields valid range
+ * will flag that field to be valid.  IE pass -1 to mark the field invalid.
+ *
+ * Component ID is device specific.  Define this as a string.
+ */
+void qmp_cxl_inject_gen_media_event(const char *path, uint8_t log,
+                                    uint8_t flags, uint64_t physaddr,
+                                    uint8_t descriptor, uint8_t type,
+                                    uint8_t transaction_type,
+                                    bool has_channel, uint8_t channel,
+                                    bool has_rank, uint8_t rank,
+                                    bool has_device, uint32_t device,
+                                    const char *component_id,
+                                    Error **errp)
+{
+    Object *obj = object_resolve_path(path, NULL);
+    struct cxl_event_gen_media gem;
+    struct cxl_event_record_hdr *hdr = &gem.hdr;
+    CXLDeviceState *cxlds;
+    CXLType3Dev *ct3d;
+    uint16_t valid_flags = 0;
+
+    if (log >= CXL_EVENT_TYPE_MAX) {
+        error_setg(errp, "Invalid log type: %d", log);
+        return;
+    }
+    if (!obj) {
+        error_setg(errp, "Unable to resolve path");
+        return;
+    }
+    if (!object_dynamic_cast(obj, TYPE_CXL_TYPE3)) {
+        error_setg(errp, "Path does not point to a CXL type 3 device");
+    }
+    ct3d = CXL_TYPE3(obj);
+    cxlds = &ct3d->cxl_dstate;
+
+    memset(&gem, 0, sizeof(gem));
+    cxl_assign_event_header(hdr, &gen_media_uuid, flags,
+                            sizeof(struct cxl_event_gen_media));
+
+    gem.phys_addr = physaddr;
+    gem.descriptor = descriptor;
+    gem.type = type;
+    gem.transaction_type = transaction_type;
+
+    if (has_channel) {
+        gem.channel = channel;
+        valid_flags |= CXL_GMER_VALID_CHANNEL;
+    }
+
+    if (has_rank) {
+        gem.rank = rank;
+        valid_flags |= CXL_GMER_VALID_RANK;
+    }
+
+    if (has_device) {
+        st24_le_p(gem.device, device);
+        valid_flags |= CXL_GMER_VALID_DEVICE;
+    }
+
+    if (component_id) {
+        strncpy((char *)gem.component_id, component_id,
+                sizeof(gem.component_id) - 1);
+        valid_flags |= CXL_GMER_VALID_COMPONENT;
+    }
+
+    stw_le_p(gem.validity_flags, valid_flags);
+
+    if (cxl_event_insert(cxlds, log, (struct cxl_event_record_raw *)&gem)) {
+        cxl_event_irq_assert(ct3d);
+    }
+}
+
 static void ct3_class_init(ObjectClass *oc, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
