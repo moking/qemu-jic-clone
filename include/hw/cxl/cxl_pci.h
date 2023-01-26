@@ -11,6 +11,7 @@
 #define CXL_PCI_H
 
 #include "qemu/compiler.h"
+#include "hw/cxl/cxl_compliance.h"
 
 #define CXL_VENDOR_ID 0x1e98
 
