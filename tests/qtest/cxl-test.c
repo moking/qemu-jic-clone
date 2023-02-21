@@ -20,7 +20,7 @@
     "-M cxl-fmw.0.targets.0=cxl.0,cxl-fmw.0.targets.1=cxl.1,cxl-fmw.0.size=4G "
 
 #define QEMU_VIRT_2PXB_CMD \
-    "-machine virt,cxl=on " \
+    "-machine virt,cxl=on -cpu max " \
     "-device pxb-cxl,id=cxl.0,bus=pcie.0,bus_nr=52 " \
     "-device pxb-cxl,id=cxl.1,bus=pcie.0,bus_nr=53 " \
     "-M cxl-fmw.0.targets.0=cxl.0,cxl-fmw.0.targets.1=cxl.1,cxl-fmw.0.size=4G "
