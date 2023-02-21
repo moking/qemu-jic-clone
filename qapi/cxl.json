@@ -6,6 +6,52 @@
 ##
 
 ##
+# @CxlEventLog:
+#
+# CXL has a number of separate event logs for different types of event.
+# Each such event log is handled and signaled independently.
+#
+# @informational: Information Event Log
+# @warning: Warning Event Log
+# @failure: Failure Event Log
+# @fatal: Fatal Event Log
+##
+{ 'enum': 'CxlEventLog',
+  'data': ['informational',
+           'warning',
+           'failure',
+           'fatal'
+           ]
+ }
+
+##
+# @cxl-inject-gen-media-event:
+#
+# Inject an event record for a General Media Event (CXL r3.0 8.2.9.2.1.1)
+# This event type is reported via one of the event logs specified via
+# the log parameter.
+#
+# @path: CXL type 3 device canonical QOM path
+# @log: Event Log to add the event to
+# @flags: header flags
+# @physaddr: Physical Address
+# @descriptor: Descriptor
+# @type: Type
+# @transaction-type: Transaction Type
+# @channel: Channel
+# @rank: Rank
+# @device: Device
+# @component-id: Device specific string
+##
+{ 'command': 'cxl-inject-gen-media-event',
+  'data': { 'path': 'str', 'log': 'CxlEventLog', 'flags': 'uint8',
+            'physaddr': 'uint64', 'descriptor': 'uint8',
+            'type': 'uint8', 'transaction-type': 'uint8',
+            '*channel': 'uint8', '*rank': 'uint8',
+            '*device': 'uint32', '*component-id': 'str'
+            }}
+
+##
 # @cxl-inject-poison:
 #
 # Poison records indicate that a CXL memory device knows that a particular
