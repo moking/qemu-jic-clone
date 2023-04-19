@@ -552,6 +552,81 @@ void pci_root_bus_cleanup(PCIBus *bus)
     qbus_unrealize(BUS(bus));
 }
 
+/*
+ * Count all buses below a particular bus in the PCI Heriarchy
+ * Note that there is no way to establish what might be hotplugged
+ * later so this is at best a minumum bound.
+ */
+int pci_bus_count_buses(PCIBus *bus)
+{
+    int buses = 0;
+    int devfn;
+    
+    for (devfn = 0; devfn < 256; devfn++) {
+        PCIDevice *d;
+
+        if (!bus->devices[devfn]) {
+            continue;
+        }
+        d = bus->devices[devfn];
+        if (!object_dynamic_cast(OBJECT(d), TYPE_PCI_BRIDGE)) {
+            continue;
+        }
+        buses += pci_bus_count_buses(&PCI_BRIDGE(d)->sec_bus);
+        buses++;
+    }
+    return buses;
+}
+
+/*
+ * This is complex to put it lightly - see drivers/pci/setup-bus.c in Linux
+ * and exact requirements for space are based on heuristics and kernel
+ * command line parameters.  There is no right answer.
+ * Roughly speaking need to:
+ * Track numbers of each resource size 1MB to 8TB below each bridge
+ */
+hwaddr pci_bus_required_mmio(PCIBus *bus)
+{
+    hwaddr mmio = 0, mmio64;
+    int devfn, i;
+    
+    for (devfn = 0; devfn < 256; devfn++) {
+        PCIDevice *d;
+
+        if (!bus->devices[devfn]) {
+            continue;
+        }
+        d = bus->devices[devfn];
+        if (object_dynamic_cast(OBJECT(d), TYPE_PCI_BRIDGE)) {
+            mmio += pci_bus_required_mmio(&PCI_BRIDGE(d)->sec_bus);
+        }
+
+        /* Establish local requirements */
+        for (i = 0; i < PCI_NUM_REGIONS; i++) {
+            PCIIORegion *r = &d->io_regions[i];
+
+            if (r->type & PCI_BASE_ADDRESS_SPACE_IO) {
+                continue;
+            }
+            if (!r->size) {
+                continue;
+            }
+            if (r->type & PCI_BASE_ADDRESS_MEM_TYPE_64) {
+                printf("64 bit addressable\n");
+            }
+            if (r->size < UINT32_MAX) {
+                mmio += r->size;
+                printf("32 bit memory bar size %lx\n", r->size);
+            } else {
+                mmio64 += r->size;
+                printf("64 bit memory bar size %lx\n", r->size);
+            }
+        }
+        
+    }
+    return mmio;
+}
+
 void pci_bus_irqs(PCIBus *bus, pci_set_irq_fn set_irq,
                   void *irq_opaque, int nirq)
 {
