@@ -56,6 +56,41 @@
             }}
 
 ##
+# @cxl-inject-dram-event:
+#
+# Inject an event record for a DRAM Event (CXL r3.0 8.2.9.2.1.2)
+# This event type is reported via one of the event logs specified via
+# the log parameter.
+#
+# @path: CXL type 3 device canonical QOM path
+# @log: Event Log to add the event to
+# @flags: header flags
+# @physaddr: Physical Address
+# @descriptor: Descriptor
+# @type: Type
+# @transaction-type: Transaction Type
+# @channel: Channel
+# @rank: Rank
+# @nibble-mask: Identify one or more nibbles that the error affects
+# @bank-group: Bank group
+# @bank: Bank
+# @row: Row
+# @column: Column
+# @correction-mask: Bits within each nibble. Used in order of bits set
+#                   in the nibble-mask.  Up to 4 nibbles may be covered.
+#
+# Since: 8.1
+##
+{ 'command': 'cxl-inject-dram-event',
+  'data': { 'path': 'str', 'log': 'CxlEventLog', 'flags': 'uint8',
+            'physaddr': 'uint64', 'descriptor': 'uint8',
+            'type': 'uint8', 'transaction-type': 'uint8',
+            '*channel': 'uint8', '*rank': 'uint8', '*nibble-mask': 'uint32',
+            '*bank-group': 'uint8', '*bank': 'uint8', '*row': 'uint32',
+            '*column': 'uint16', '*correction-mask': [ 'uint64' ]
+           }}
+
+##
 # @cxl-inject-poison:
 #
 # Poison records indicate that a CXL memory device knows that a particular
