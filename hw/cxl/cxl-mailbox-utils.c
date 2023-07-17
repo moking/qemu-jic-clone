@@ -73,6 +73,7 @@ enum {
         #define CLEAR_POISON           0x2
     PHYSICAL_SWITCH = 0x51,
         #define IDENTIFY_SWITCH_DEVICE      0x0
+        #define GET_PHYSICAL_PORT_STATE     0x1
 };
 
 
@@ -314,6 +315,88 @@ static CXLRetCode cmd_identify_switch_device(const struct cxl_cmd *cmd,
     out->active_port_bitmask[usp->port / 8] |= (1 << usp->port % 8);
 
     *len_out = sizeof(*out);
+
+    return CXL_MBOX_SUCCESS;
+}
+
+static CXLRetCode cmd_get_physical_port_state(const struct cxl_cmd *cmd,
+                                              uint8_t *payload_in,
+                                              size_t len_in,
+                                              uint8_t *payload_out,
+                                              size_t *len_out,
+                                              CXLCCI *cci)
+{
+    /*
+     * CXL r3.0 7.6.7.1.2 Get Physical Port State (Opcode 5101h)
+     */
+    /* CXL r3.0 Table 7-18 Get Physical Port State Request Payload */
+    struct cxl_fmapi_get_phys_port_state_req_pl {
+        uint8_t num_ports; /* CHECK. may get too large for MCTP message size */
+        uint8_t ports[];
+    } QEMU_PACKED *in;
+
+    /* CXL r3.0 Table 7-20 Get Physical Port State Port Information Block Format */
+    struct cxl_fmapi_port_state_info_block {
+        uint8_t port_id;
+        uint8_t config_state;
+        uint8_t connected_device_cxl_version;
+        uint8_t rsv1;
+        uint8_t connected_device_type;
+        uint8_t port_cxl_version_bitmask;
+        uint8_t max_link_width;
+        uint8_t negotiated_link_width;
+        uint8_t supported_link_speeds_vector;
+        uint8_t max_link_speed;
+        uint8_t current_link_speed;
+        uint8_t ltssm_state;
+        uint8_t first_lane_num;
+        uint16_t link_state;
+        uint8_t supported_ld_count;
+    } QEMU_PACKED;
+
+    /* CXL r3.0 Table 7-19 Get Physical Port State Response Payload */
+    struct cxl_fmapi_get_phys_port_state_resp_pl {
+        uint8_t num_ports;
+        uint8_t rsv1[3];
+        struct cxl_fmapi_port_state_info_block ports[];
+    } QEMU_PACKED *out;
+    PCIBus *bus = &PCI_BRIDGE(cci->d)->sec_bus;
+    int num_phys_ports = pcie_count_ds_ports(bus);
+    int i;
+    size_t pl_size;
+ 
+    in = (struct cxl_fmapi_get_phys_port_state_req_pl *)payload_in;
+    out = (struct cxl_fmapi_get_phys_port_state_resp_pl *)payload_out;
+    /* Not currently matching against requested  */
+    out->num_ports = num_phys_ports;
+
+    for (i = 0; i < out->num_ports; i++) {
+        struct cxl_fmapi_port_state_info_block *port;
+        port = &out->ports[i];
+        port->port_id = i; /* TODO: Right port number */
+        if (port->port_id < 1) { /* 1 upstream ports */
+            port->config_state = 4;
+            port->connected_device_type = 0;
+        } else { /* remainder downstream ports */
+            port->config_state = 3;
+            port->connected_device_type = 4; /* TODO: Check. CXL type 3 */
+            port->supported_ld_count = 3;
+        }
+        port->connected_device_cxl_version = 2;
+        port->port_cxl_version_bitmask = 0x2;
+        port->max_link_width = 0x10; /* x16 */
+        port->negotiated_link_width = 0x10;
+        port->supported_link_speeds_vector = 0x1c; /* 8, 16, 32 GT/s */
+        port->max_link_speed = 5;
+        port->current_link_speed = 5; /* 32 */
+        port->ltssm_state = 0x7; /* L2 */
+        port->first_lane_num = 0;
+        port->link_state = 0;
+    }
+
+    pl_size = sizeof(out) + sizeof(*out->ports) * in->num_ports;
+
+    *len_out = pl_size;
 
     return CXL_MBOX_SUCCESS;
 }
@@ -905,6 +988,8 @@ static const struct cxl_cmd cxl_cmd_set_sw[256][256] = {
     [LOGS][GET_LOG] = { "LOGS_GET_LOG", cmd_logs_get_log, 0x18, 0 },
     [PHYSICAL_SWITCH][IDENTIFY_SWITCH_DEVICE] = {"IDENTIFY_SWITCH_DEVICE",
         cmd_identify_switch_device, 0, 0x49 },
+    [PHYSICAL_SWITCH][GET_PHYSICAL_PORT_STATE] = { "SWITCH_PHYSICAL_PORT_STATS",
+        cmd_get_physical_port_state, ~0, ~0 },
 };
 
 /*
@@ -990,6 +1075,8 @@ static const struct cxl_cmd cxl_cmd_set_usp_mctp[256][256] = {
     [INFOSTAT][IS_IDENTIFY] = { "IDENTIFY", cmd_infostat_identify, 0, 18 },
     [PHYSICAL_SWITCH][IDENTIFY_SWITCH_DEVICE] = {"IDENTIFY_SWITCH_DEVICE",
         cmd_identify_switch_device, 0, 0x49 },
+    [PHYSICAL_SWITCH][GET_PHYSICAL_PORT_STATE] = { "SWITCH_PHYSICAL_PORT_STATS",
+        cmd_get_physical_port_state, ~0, ~0 },
 };
 
 void cxl_initialize_usp_mctpcci(CXLCCI *cci, DeviceState *d, DeviceState *intf, size_t payload_max)
