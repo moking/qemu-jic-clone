@@ -407,6 +407,8 @@ struct CXLType3Dev {
     CXLDeviceState cxl_dstate;
     CXLCCI cci; /* Primary PCI mailbox CCI */
     CXLCCI oob_mctp_cci; /* Initialized only if targetted */
+    /* Always intialized as no way to know if a VDM might show up */
+    CXLCCI vdm_mctp_cci;
 
     /* DOE */
     DOECap doe_cdat;
