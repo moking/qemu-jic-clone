@@ -1048,6 +1048,10 @@ static void ct3d_reset(DeviceState *dev)
 
     cxl_component_register_init_common(reg_state, write_msk, CXL2_TYPE3_DEVICE);
     cxl_device_register_init_t3(ct3d);
+
+    /* Bring up an endpoint to target with MCTP over VDM */
+    cxl_initialize_usp_mctpcci(&ct3d->vdm_mctp_cci, DEVICE(ct3d), DEVICE(ct3d),
+                               512); /* Max payload made up */
 }
 
 static Property ct3_props[] = {
