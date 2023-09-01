@@ -344,6 +344,17 @@ void mpam_cache_fill_info(Object *obj, MpamCacheInfo *info)
             .cfg_part_sel = mpamf->cfg_part_sel, /* Garbage */
         };
 
+        {
+            intList *w_list = NULL, **w_next = &w_list;
+            for (p = 0; p < s->num_int_partid; p++) {
+                intList *il = g_malloc0(sizeof(*il));
+
+                il->value = mpamf->per_nrw_id[p].cfg_pri;
+                *w_next = il;
+                w_next = &il->next;
+            }
+            r->cfg_pri = w_list;
+        }
         /* This is annoyingly complex */
         for (p = 0; p < s->num_int_partid; p++) {
             intList *w_list = NULL, **w_next = &w_list;
@@ -577,6 +588,18 @@ static void mpam_msc_write_reg(void *opaque, hwaddr offset, uint64_t value,
                 qemu_log_mask(LOG_UNIMP,
                               "MPAM: Unexpected write to CFGP_PRI INTPRI when !HAS_INTPRI\n");
             }
+            if (FIELD_EX32(mpamf->pri_idr, MPAMF_PRI_IDR, HAS_DSPRI) &&
+                (FIELD_EX32(value, MPAMF_MPAMCFG_PRI, DSPRI) &
+                 ~((1 << FIELD_EX32(mpamf->pri_idr, MPAMF_PRI_IDR, DSPRI_WD)) - 1))) {
+                qemu_log_mask(LOG_UNIMP,
+                              "MPAM: Unexpected overly wide write of DSPRI\n");
+            }
+            if (FIELD_EX32(mpamf->pri_idr, MPAMF_PRI_IDR, HAS_INTPRI) &&
+                (FIELD_EX32(value, MPAMF_MPAMCFG_PRI, INTPRI) &
+                 ~((1 << FIELD_EX32(mpamf->pri_idr, MPAMF_PRI_IDR, INTPRI_WD)) - 1))) {
+                qemu_log_mask(LOG_UNIMP,
+                              "MPAM: Unexpected overly wide write of INTPRI\n");
+            }
         }
         mpamf->per_nrw_id[nrw_part_sel].cfg_pri = value;
         return;
@@ -788,13 +811,20 @@ static void mpam_msc_cache_realize(DeviceState *dev, Error **errp)
         mpamf->cpor_idr = FIELD_DP32(mpamf->cpor_idr, MPAMF_CPOR_IDR, CPBM_WD,
                                      MPAM_CACHE_PART);
 
-        /* Priority */
+        /* Priority - Internal and downstream*/
         mpamf->pri_idr = FIELD_DP32(mpamf->pri_idr, MPAMF_PRI_IDR,
                                     HAS_INTPRI, 1);
         mpamf->pri_idr = FIELD_DP32(mpamf->pri_idr, MPAMF_PRI_IDR,
                                     INTPRI_0_IS_LOW, 1);
         mpamf->pri_idr = FIELD_DP32(mpamf->pri_idr, MPAMF_PRI_IDR,
                                     INTPRI_WD, 2);
+
+        mpamf->pri_idr = FIELD_DP32(mpamf->pri_idr, MPAMF_PRI_IDR,
+                                    HAS_DSPRI, 1);
+        mpamf->pri_idr = FIELD_DP32(mpamf->pri_idr, MPAMF_PRI_IDR,
+                                    DSPRI_0_IS_LOW, 1);
+        mpamf->pri_idr = FIELD_DP32(mpamf->pri_idr, MPAMF_PRI_IDR,
+                                    DSPRI_WD, 2);
 
         /* Capacity Partitioning */
         mpamf->ccap_idr = FIELD_DP32(mpamf->ccap_idr, MPAMF_CCAP_IDR,

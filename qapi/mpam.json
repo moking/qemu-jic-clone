@@ -34,6 +34,7 @@
              'ecr': 'int',
              'esr': 'int',
              'cfg-part-sel': 'int',
+             'cfg-pri': ['int'],
              'cfg-cpbm': ['MpamBm']#lazy
           }
 }
