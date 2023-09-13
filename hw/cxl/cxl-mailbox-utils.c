@@ -74,8 +74,100 @@ enum {
     PHYSICAL_SWITCH = 0x51,
         #define IDENTIFY_SWITCH_DEVICE      0x0
         #define GET_PHYSICAL_PORT_STATE     0x1
+    TUNNEL = 0x53,
+        #define MANAGEMENT_COMMAND     0x0
 };
 
+/* CCI Message Format CXL r3.0 Figure 7-19 */
+typedef struct CXLCCIMessage {
+    uint8_t category;
+    uint8_t tag;
+    uint8_t resv1;
+    uint8_t command;
+    uint8_t command_set;
+    uint8_t pl_length[3];
+    uint16_t vendor_specific;
+    uint16_t rc;
+    uint8_t payload[];
+} QEMU_PACKED CXLCCIMessage;
+
+static CXLRetCode cmd_tunnel_management_cmd(const struct cxl_cmd *cmd,
+                                            uint8_t *payload_in,
+                                            size_t len_in,
+                                            uint8_t *payload_out,
+                                            size_t *len_out,
+                                            CXLCCI *cci)
+{
+    CXLUpstreamPort *usp = CXL_USP(cci->d);
+    PCIDevice *tunnel_target;
+    struct {
+        uint8_t port_or_ld_id;
+        uint8_t target_type;
+        uint16_t size;
+        CXLCCIMessage ccimessage;
+    } *in;
+    struct {
+        uint16_t resp_len;
+        uint8_t resv[2];
+        CXLCCIMessage ccimessage;
+    } *out;
+
+    if (cmd->in < sizeof(*in)) {
+        return CXL_MBOX_INVALID_INPUT;
+    }
+    in = (void *)payload_in;
+    out = (void *)payload_out;
+
+    if (cmd->in < sizeof(*in) + in->size) {
+        return CXL_MBOX_INVALID_INPUT;
+    }
+    if (in->size < 3 * sizeof(uint32_t)) {
+        return CXL_MBOX_INVALID_INPUT;
+    }
+    /* Need to find target CCI */
+    //Lets assume simple tunnel to port - find that device.
+    if (in->target_type != 0) {
+        printf("QEMU: sent to FM-LD which makes no sense yet\n");
+    }
+
+    tunnel_target = pcie_find_port_by_pn(&PCI_BRIDGE(usp)->sec_bus,
+                                         in->port_or_ld_id);
+    if (!tunnel_target) {
+        return CXL_MBOX_INVALID_INPUT;
+    }
+
+    tunnel_target =
+        pci_bridge_get_sec_bus(PCI_BRIDGE(tunnel_target))->devices[0];
+    if (!tunnel_target) {
+        return CXL_MBOX_INVALID_INPUT;
+    }
+
+    if (object_dynamic_cast(OBJECT(tunnel_target), TYPE_CXL_TYPE3)) {
+        CXLType3Dev *ct3d = CXL_TYPE3(tunnel_target);
+        size_t pl_length = in->ccimessage.pl_length[2] << 16 |
+            in->ccimessage.pl_length[1] << 8 | in->ccimessage.pl_length[0];
+        size_t length_out;
+        bool bg_started;
+        int rc;
+
+        rc = cxl_process_cci_message(&ct3d->vdm_mctp_cci,
+                                     in->ccimessage.command_set,
+                                     in->ccimessage.command,
+                                     pl_length, in->ccimessage.payload,
+                                     &length_out, out->ccimessage.payload,
+                                     &bg_started);
+        /* Payload should be in place. Rest of CCI header and needs filling */
+        out->resp_len = length_out + sizeof(CXLCCIMessage); /* CHECK */
+        st24_le_p(out->ccimessage.pl_length, length_out);
+        out->ccimessage.rc = rc;
+        printf("len_out is %lu\n", length_out);
+        *len_out = length_out + sizeof(*out);
+
+        return CXL_MBOX_SUCCESS;
+    }
+
+    return CXL_MBOX_INVALID_INPUT;
+}
 
 static CXLRetCode cmd_events_get_records(const struct cxl_cmd *cmd,
                                          uint8_t *payload_in, size_t len_in,
@@ -1002,6 +1094,8 @@ static const struct cxl_cmd cxl_cmd_set_sw[256][256] = {
         cmd_identify_switch_device, 0, 0x49 },
     [PHYSICAL_SWITCH][GET_PHYSICAL_PORT_STATE] = { "SWITCH_PHYSICAL_PORT_STATS",
         cmd_get_physical_port_state, ~0, ~0 },
+    [TUNNEL][MANAGEMENT_COMMAND] = { "TUNNEL_MANAGEMENT_COMMAND",
+                                     cmd_tunnel_management_cmd, ~0, ~0 },
 };
 
 /*
