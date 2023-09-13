@@ -431,6 +431,8 @@ struct CXLType3Dev {
     /* DOE */
     DOECap doe_cdat;
     DOECap doe_comp;
+    uint16_t spdm_port;
+    DOECap doe_spdm;
 
     /* Error injection */
     CXLErrorList error_list;
