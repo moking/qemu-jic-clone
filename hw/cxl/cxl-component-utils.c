@@ -76,7 +76,7 @@ static uint64_t cxl_cache_mem_read_reg(void *opaque, hwaddr offset,
     if (cregs->special_ops && cregs->special_ops->read) {
         return cregs->special_ops->read(cxl_cstate, offset, size);
     } else {
-        return cregs->cache_mem_registers[offset / sizeof(*cregs->cache_mem_registers)];
+        return cregs->cache_mem_registers[offset / size];
     }
 }
 
@@ -122,10 +122,10 @@ static void cxl_cache_mem_write_reg(void *opaque, hwaddr offset, uint64_t value,
                       "CXL 8 byte cache mem registers not implemented\n");
         return;
     }
-    mask = cregs->cache_mem_regs_write_mask[offset / sizeof(*cregs->cache_mem_regs_write_mask)];
+    mask = cregs->cache_mem_regs_write_mask[offset / size];
     value &= mask;
     /* RO bits should remain constant. Done by reading existing value */
-    value |= ~mask & cregs->cache_mem_registers[offset / sizeof(*cregs->cache_mem_registers)];
+    value |= ~mask & cregs->cache_mem_registers[offset / size];
     if (cregs->special_ops && cregs->special_ops->write) {
         cregs->special_ops->write(cxl_cstate, offset, value, size);
         return;
@@ -135,7 +135,7 @@ static void cxl_cache_mem_write_reg(void *opaque, hwaddr offset, uint64_t value,
         offset <= A_CXL_HDM_DECODER3_TARGET_LIST_HI) {
         dumb_hdm_handler(cxl_cstate, offset, value);
     } else {
-        cregs->cache_mem_registers[offset / sizeof(*cregs->cache_mem_registers)] = value;
+        cregs->cache_mem_registers[offset / size] = value;
     }
 }
 
