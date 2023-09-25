@@ -789,7 +789,7 @@ static int cxl_create_dc_regions(CXLType3Dev *ct3d)
     int i;
     uint64_t region_base = 0;
     uint64_t region_len =  2 * GiB;
-    uint64_t decode_len = 8; /* 8*256MB */
+    uint64_t decode_len = 2 * GiB;
     uint64_t blk_size = 2 * MiB;
     CXLDCDRegion *region;
 
@@ -803,6 +803,7 @@ static int cxl_create_dc_regions(CXLType3Dev *ct3d)
     for (i = 0; i < ct3d->dc.num_regions; i++) {
         region = &ct3d->dc.regions[i];
         region->base = region_base;
+        /* NOTE: Should be divided by 256 * MiB before be returned to host */
         region->decode_len = decode_len;
         region->len = region_len;
         region->block_size = blk_size;
