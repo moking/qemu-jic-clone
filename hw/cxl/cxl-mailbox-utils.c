@@ -1400,10 +1400,9 @@ CXLDCDRegion *cxl_find_dc_region(CXLType3Dev *ct3d, uint64_t dpa, uint64_t len)
 }
 
 void cxl_insert_extent_to_extent_list(CXLDCDExtentList *list,
-                                             uint64_t dpa,
-                                             uint64_t len,
-                                             uint8_t *tag,
-                                             uint16_t shared_seq)
+                                      uint64_t dpa, uint64_t len,
+                                      uint8_t *tag,
+                                      uint16_t shared_seq)
 {
     CXLDCDExtent *extent;
 
@@ -1418,6 +1417,13 @@ void cxl_insert_extent_to_extent_list(CXLDCDExtentList *list,
     extent->shared_seq = shared_seq;
 
     QTAILQ_INSERT_TAIL(list, extent, node);
+}
+
+static void cxl_remove_extent_to_extent_list(CXLDCDExtentList *list,
+                                             CXLDCDExtent *ent)
+{
+    QTAILQ_REMOVE(list, ent, node);
+    g_free(ent);
 }
 
 /*
@@ -1544,14 +1550,15 @@ static CXLRetCode cmd_dcd_add_dyn_cap_rsp(const struct cxl_cmd *cmd,
             }
         }
         if (ent) {
-            QTAILQ_REMOVE(&ct3d->dc.extents_pending_to_add, ent, node);
-            g_free(ent);
+            cxl_remove_extent_to_extent_list(&ct3d->dc.extents_pending_to_add,
+                                             ent);
         } else {
             return CXL_MBOX_INVALID_PA;
         }
 
         cxl_insert_extent_to_extent_list(extent_list, dpa, len, NULL, 0);
         ct3d->dc.total_extent_count += 1;
+        ct3_set_region_block_backed(ct3d, dpa, len);
     }
 
     /*
@@ -1600,16 +1607,22 @@ static CXLRetCode cmd_dcd_release_dyn_cap(const struct cxl_cmd *cmd,
                 uint64_t len1 = dpa - ent->start_dpa;
                 uint64_t len2 = ent->start_dpa + ent->len - dpa - len;
 
+                cxl_remove_extent_to_extent_list(extent_list, ent);
+                ct3d->dc.total_extent_count -= 1;
+                ct3_clear_region_block_backed(ct3d, dpa, len);
+
                 if (len1) {
                     cxl_insert_extent_to_extent_list(extent_list,
                                                      ent->start_dpa, len1,
                                                      NULL, 0);
                     ct3d->dc.total_extent_count += 1;
+                    ct3_set_region_block_backed(ct3d, dpa, len);
                 }
                 if (len2) {
                     cxl_insert_extent_to_extent_list(extent_list, dpa + len,
                                                      len2, NULL, 0);
                     ct3d->dc.total_extent_count += 1;
+                    ct3_set_region_block_backed(ct3d, dpa, len);
                 }
                 break;
                 /*Currently we reject the attempt to remove a superset*/
@@ -1620,11 +1633,7 @@ static CXLRetCode cmd_dcd_release_dyn_cap(const struct cxl_cmd *cmd,
             }
         }
 
-        if (ent) {
-            QTAILQ_REMOVE(extent_list, ent, node);
-            g_free(ent);
-            ct3d->dc.total_extent_count -= 1;
-        } else {
+        if (!ent) {
             /* Try to remove a non-existing extent */
             return CXL_MBOX_INVALID_PA;
         }
