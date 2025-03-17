@@ -46,6 +46,9 @@
 /* Implementation choice - may make this configurable */
 #define MCTP_CXL_MAILBOX_BYTES 512
 
+/* Supported FMAPI Cmds */
+#define FMAPI_CMD_MAX_OPCODE 0x57
+
 typedef struct CXLMCTPMessage {
     /*
      * DSP0236 (MCTP Base) Integrity Check + Message Type
@@ -200,7 +203,8 @@ static void i2c_mctp_cxl_handle_message(MCTPI2CEndpoint *mctp)
         if (!(msg->message_type == MCTP_MT_CXL_TYPE3 &&
               msg->command_set < 0x51) &&
             !(msg->message_type == MCTP_MT_CXL_FMAPI &&
-              msg->command_set >= 0x51 && msg->command_set < 0x56)) {
+              msg->command_set >= 0x51 &&
+              msg->command_set < FMAPI_CMD_MAX_OPCODE)) {
             buf->rc = CXL_MBOX_UNSUPPORTED;
             st24_le_p(buf->pl_length, len_out);
             s->len = s->pos;
