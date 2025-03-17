@@ -609,6 +609,7 @@ typedef struct CXLDCRegion {
     uint8_t flags;
     unsigned long *blk_bitmap;
     uint64_t supported_blk_size_bitmask;
+    uint8_t dsmas_flags;
 } CXLDCRegion;
 
 typedef struct CXLSetFeatureInfo {

@@ -237,6 +237,8 @@ static int ct3_build_cdat_table(CDATSubHeader ***cdat_table, void *priv)
                                           ct3d->dc.regions[i].len,
                                           false, true, region_base);
             ct3d->dc.regions[i].dsmadhandle = dsmad_handle - 1;
+            CDATDsmas *dsmas = (CDATDsmas *) table[cur_ent + CT3_CDAT_DSMAS];
+            ct3d->dc.regions[i].dsmas_flags = dsmas->flags;
 
             cur_ent += CT3_CDAT_NUM_ENTRIES;
             region_base += ct3d->dc.regions[i].len;
