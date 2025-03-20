@@ -138,6 +138,172 @@ static void acpi_dsdt_add_mctp(Aml *scope, VirtMachineState *vms)
     aml_append(scope, sub_dev);
 }
 
+static void acpi_dsdt_add_cachectl_psci(Aml *scope)
+{
+    Aml *dsm, *field, *uuid, *function, *ifctx, *ifctx2, *params;
+    Aml *dev = aml_device("CCT%d", 0);
+
+    aml_append(dev, aml_name_decl("_HID", aml_string("ACPI0019")));
+    aml_append(dev, aml_name_decl("_UID", aml_int(0)));
+    aml_append(dev, aml_operation_region("AFFH", AML_AS_FFH, aml_int(1), 144));
+    field = aml_field("AFFH", AML_BUFFER_ACC, AML_NOLOCK, AML_PRESERVE);
+    aml_append(field, aml_named_field("AFFX", 1152));
+    aml_append(dev, field);
+    dsm = aml_method("_DSM", 4, AML_SERIALIZED);
+
+    uuid = aml_arg(0);
+    function = aml_arg(2);
+    params = aml_arg(3);
+    ifctx = aml_if(aml_equal(uuid,
+                             aml_touuid("61FDC7D5-1468-4807-B565-515BF6B75319")));
+    /* Function 0, standard DSM query function */
+    ifctx2 = aml_if(aml_equal(function, aml_int(0)));
+    {
+        uint8_t byte_list[1] = { 0x0F }; /* function 0-3 only */
+
+        aml_append(ifctx2,
+                   aml_return(aml_buffer(sizeof(byte_list), byte_list)));
+    }
+    aml_append(ifctx, ifctx2);
+
+    /*
+     * Function 1, capablities
+     *
+     * Returns package of integers
+     * [0] - 0 = range based flushing supported
+     *       1 = no range support (flush all)
+     * [1] - Latency in millisecs
+     * [2] - Min delay between calls
+     * [3] - Operations supported
+     *       bit(0) = CLEAN_INVALIDATE
+     *       bit(1) = CLEAN (maybe shared)
+     *       bit(2) = INVALIDATE (no clean)
+     */
+    ifctx2 = aml_if(aml_equal(function, aml_int(1)));
+    {
+        /* Return value is always an integer */
+        uint64_t returnval[1] = {};
+        uint64_t psci_cmd[2] = { 0xc4000017 };
+        Aml *respkg = aml_package(4);
+        int i;
+        struct psci_cc_query {
+            Aml *name;
+            Aml *name_decl;
+            uint64_t val;
+        };
+#define CC_QUERY(_name, _i) \
+        { \
+            .name = aml_name(_name),                        \
+            .name_decl = aml_name_decl(_name, aml_int(0)),  \
+            .val = _i,                                      \
+        }
+        
+        struct psci_cc_query cc_query[3] = {
+            CC_QUERY("CCOP", 0), /* Operation type */
+            /*
+             * Do not query CPU rendevous as no way to handle with an ACPI interface
+             * so if a system requires that it should not provide ACPI0019
+             */
+            CC_QUERY("CCLA", 2), /* Latency */
+            CC_QUERY("CCRL", 3), /* Rate limit */
+        };
+
+        aml_append(ifctx2,
+                   aml_name_decl("CCR1", aml_buffer(sizeof(returnval),
+                                                    (uint8_t *)returnval)));
+        aml_append(ifctx2, aml_create_dword_field(aml_name("CCR1"), aml_int(0), "RRR1"));
+
+        for (i = 0; i < 3; i++) {
+            psci_cmd[1] = cc_query[i].val; 
+            aml_append(ifctx2,
+                       aml_store(aml_store(aml_buffer(sizeof(psci_cmd),
+                                                      (uint8_t *)&psci_cmd[0]),
+                                           aml_name("AFFX")), aml_name("CCR1")));
+            /* Create a named variable to keep a copy in */
+            aml_append(ifctx2, cc_query[i].name_decl);
+            aml_append(ifctx2, aml_store(aml_name("RRR1"), cc_query[i].name));
+            /* Add to the package that will be returned. */
+            aml_append(respkg, cc_query[i].name);
+
+        }
+        aml_append(respkg, aml_int(1)); /* Clean invalidate only */
+        aml_append(ifctx2, aml_return(respkg));
+    }
+    aml_append(ifctx, ifctx2);
+    
+    /*
+     * Function 2, issue the command
+     * Package of integer parameters
+     * [0] - Base address
+     * [1] - Size
+     * [2] - Operation type.
+     *       0 - CLEAN_INVALIDATE
+     *       1 - CLEAN
+     *       2 - INVALIDATE
+     *
+     * Return 0 for success
+     *        1 Invalid parameter
+     *        2 Busy (not implemented here)
+     *        3 Timeout
+     *        4 Rate limited
+     */
+    ifctx2 = aml_if(aml_equal(function, aml_int(2)));
+    {
+        uint64_t word_list[5] = { 0xc4000016, };
+        Aml *buff = aml_buffer(sizeof(word_list), (uint8_t *)&word_list[0]);
+        Aml *pkg_index = aml_local(0); /* Address of package element */
+        Aml *op_type = aml_local(1);
+        Aml *if_in_fmt_err, *if_not_clean_inval;
+
+        /* Check package of 4 element s*/
+        if_in_fmt_err = aml_if(aml_lnot(aml_land(aml_equal(aml_object_type(params),
+                                                          aml_int(4 /* Package */)),
+                                                aml_equal(aml_sizeof(params), aml_int(3)))));
+        aml_append(if_in_fmt_err, aml_return(aml_int(1)));
+        aml_append(ifctx2, if_in_fmt_err);
+        
+        
+        aml_append(ifctx2, aml_name_decl("BUFF", buff));
+        /* Create named fields for the base and size */
+        aml_append(ifctx2, aml_create_qword_field(aml_name("BUFF"), aml_int(8), "BFBA"));
+        aml_append(ifctx2, aml_create_qword_field(aml_name("BUFF"), aml_int(16), "BFSZ"));
+        /* Timeout not relevant so leave zero */
+        /* Flags field - currently leave as 0, but maybe support query later */
+        aml_append(ifctx2, aml_create_qword_field(aml_name("BUFF"), aml_int(32), "BFFL"));
+
+        aml_append(ifctx2, aml_store(aml_index(params, aml_int(0)), pkg_index));
+        aml_append(ifctx2, aml_store(aml_derefof(pkg_index), aml_name("BFBA")));
+        aml_append(ifctx2, aml_store(aml_index(params, aml_int(1)), pkg_index));
+        aml_append(ifctx2, aml_store(aml_derefof(pkg_index), aml_name("BFSZ")));
+
+        /* params[2] is the type */
+        /* Check if it is clean invalidate */
+        aml_append(ifctx2, aml_store(aml_index(params, aml_int(2)), pkg_index));
+        aml_append(ifctx2, aml_store(aml_derefof(pkg_index), op_type));
+        if_not_clean_inval = aml_if(aml_lnot(aml_equal(op_type, aml_int(0))));
+        aml_append(if_not_clean_inval, aml_return(aml_int(1))); /* Unsupported type */
+        aml_append(ifctx2, if_not_clean_inval);        
+
+        aml_append(ifctx2, aml_store(aml_name("BUFF"), aml_name("AFFX")));
+        aml_append(ifctx2, aml_return(aml_int(0)));
+    }
+    aml_append(ifctx, ifctx2);
+    
+    /*
+     * Function 3, poll for completion  - for now always say yes ;)
+     * Return 0 for done.
+     */
+    ifctx2 = aml_if(aml_equal(function, aml_int(3)));
+    {
+        aml_append(ifctx2, aml_return(aml_int(0)));
+    }
+    aml_append(ifctx, ifctx2);
+
+    aml_append(dsm, ifctx);
+    aml_append(dev, dsm);
+    aml_append(scope, dev);
+}
+                                  
 static void acpi_dsdt_add_uart(Aml *scope, const MemMapEntry *uart_memmap,
                                uint32_t uart_irq, int uartidx)
 {
@@ -920,6 +1086,8 @@ build_dsdt(GArray *table_data, BIOSLinker *linker, VirtMachineState *vms)
         acpi_dsdt_add_uart(scope, &memmap[VIRT_UART1],
                            (irqmap[VIRT_UART1] + ARM_SPI_BASE), 1);
     }
+
+    acpi_dsdt_add_cachectl_psci(scope);
 
     if (vms->cxl_devices_state.is_enabled) {
         acpi_dsdt_add_mctp(scope, vms);

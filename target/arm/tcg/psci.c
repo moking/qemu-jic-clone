@@ -65,7 +65,7 @@ void arm_handle_psci_call(ARMCPU *cpu)
      * the document 'SMC Calling Convention' (ARM DEN 0028)
      */
     CPUARMState *env = &cpu->env;
-    uint64_t param[4];
+    uint64_t param[5];
     uint64_t context_id, mpidr;
     target_ulong entry;
     int32_t ret = 0;
@@ -78,6 +78,9 @@ void arm_handle_psci_call(ARMCPU *cpu)
          * of which exact function we are about to call.
          */
         param[i] = is_a64(env) ? env->xregs[i] : env->regs[i];
+    }
+    if (is_a64(env)) {
+        param[4] = env->xregs[4];
     }
 
     if ((param[0] & QEMU_PSCI_0_2_64BIT) && !is_a64(env)) {
@@ -197,6 +200,29 @@ void arm_handle_psci_call(ARMCPU *cpu)
         case QEMU_PSCI_0_2_FN_MIGRATE:
         default:
             ret = QEMU_PSCI_RET_NOT_SUPPORTED;
+            break;
+        }
+        break;
+    case QEMU_PSCI_1_2_FN64_CLEAN_INV_MEMREGION:
+        printf("Clean invalidate base=%lx sz=%lx timeout=%lx flags=%lx\n", param[1], param[2], param[3], param[4]);
+        ret = 0;
+        break;
+    case QEMU_PSCI_1_2_FN64_CLEAN_INV_MEMREGION_ATTRS:
+        switch (param[1]) {
+        case 0:
+            ret = 0; /* Range */
+            break;
+        case 1:
+            ret = 0; /* Call from single CPU fine*/
+            break;
+        case 2:
+            ret = 42; /* Latency is 42 milliseconds */
+            break;
+        case 3:
+            ret = 44; /* Rate limit */
+            break;
+        case 4:
+            ret = 42; /* Not valid as @1 is 0 */
             break;
         }
         break;
