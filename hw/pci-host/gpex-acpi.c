@@ -50,9 +50,41 @@ static void acpi_dsdt_add_pci_route_table(Aml *dev, uint32_t irq,
     }
 }
 
+static void acpi_dsdt_add_pci_dsm(Aml *dev)
+{
+    Aml *method, *UUID, *ifctx, *ifctx1, *buf;
+    uint8_t byte_list[1] = {1};
+    method = aml_method("_DSM", 4, AML_NOTSERIALIZED);
+
+    /* PCI Firmware Specification 3.0
+     * 4.6.1. _DSM for PCI Express Slot Information
+     * The UUID in _DSM in this context is
+     * {E5C937D0-3553-4D7A-9117-EA4D19C3434D}
+     */
+    UUID = aml_touuid("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
+    ifctx = aml_if(aml_equal(aml_arg(0), UUID));
+    ifctx1 = aml_if(aml_equal(aml_arg(2), aml_int(0)));
+
+    buf = aml_buffer(1, byte_list);
+    aml_append(ifctx1, aml_return(buf));
+    aml_append(ifctx, ifctx1);
+
+    ifctx1 = aml_if(aml_equal(aml_arg(2), aml_int(5)));
+    /* Preserve enumeration */
+    aml_append(ifctx1, aml_return(aml_int(0)));
+    aml_append(ifctx, ifctx1);
+
+    aml_append(method, ifctx);
+
+    byte_list[0] = 0;
+    buf = aml_buffer(1, byte_list);
+    aml_append(method, aml_return(buf));
+    aml_append(dev, method);
+}
+
 static void acpi_dsdt_add_pci_osc(Aml *dev)
 {
-    Aml *method, *UUID, *ifctx, *ifctx1, *elsectx, *buf;
+    Aml *method, *UUID, *ifctx, *ifctx1, *elsectx;
 
     /* Declare an _OSC (OS Control Handoff) method */
     aml_append(dev, aml_name_decl("SUPP", aml_int(0)));
@@ -102,27 +134,6 @@ static void acpi_dsdt_add_pci_osc(Aml *dev)
                                aml_name("CDW1")));
     aml_append(elsectx, aml_return(aml_arg(3)));
     aml_append(method, elsectx);
-    aml_append(dev, method);
-
-    method = aml_method("_DSM", 4, AML_NOTSERIALIZED);
-
-    /* PCI Firmware Specification 3.0
-     * 4.6.1. _DSM for PCI Express Slot Information
-     * The UUID in _DSM in this context is
-     * {E5C937D0-3553-4D7A-9117-EA4D19C3434D}
-     */
-    UUID = aml_touuid("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
-    ifctx = aml_if(aml_equal(aml_arg(0), UUID));
-    ifctx1 = aml_if(aml_equal(aml_arg(2), aml_int(0)));
-    uint8_t byte_list[1] = {1};
-    buf = aml_buffer(1, byte_list);
-    aml_append(ifctx1, aml_return(buf));
-    aml_append(ifctx, ifctx1);
-    aml_append(method, ifctx);
-
-    byte_list[0] = 0;
-    buf = aml_buffer(1, byte_list);
-    aml_append(method, aml_return(buf));
     aml_append(dev, method);
 }
 
@@ -194,6 +205,7 @@ void acpi_dsdt_add_gpex(Aml *scope, struct GPEXConfig *cfg)
             } else {
                 acpi_dsdt_add_pci_osc(dev);
             }
+            acpi_dsdt_add_pci_dsm(dev);
 
             aml_append(scope, dev);
         }
@@ -269,6 +281,7 @@ void acpi_dsdt_add_gpex(Aml *scope, struct GPEXConfig *cfg)
 
     acpi_dsdt_add_pci_osc(dev);
 
+    acpi_dsdt_add_pci_dsm(dev);
     Aml *dev_res0 = aml_device("%s", "RES0");
     aml_append(dev_res0, aml_name_decl("_HID", aml_string("PNP0C02")));
     crs = aml_resource_template();
