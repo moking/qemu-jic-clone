@@ -38,7 +38,10 @@ enum CXL_T3_MSIX_VECTOR {
     CXL_T3_MSIX_CPMU0,
     CXL_T3_MSIX_CPMU1,
     CXL_T3_MSIX_PCIE_DOE_COMPLIANCE,
-    CXL_T3_MSIX_VECTOR_NR
+    CXL_T3_MSIX_CHMU0_BASE,
+    /* One interrupt per CMUH instance in the block */
+    CXL_T3_MSIX_VECTOR_NR =
+        CXL_T3_MSIX_CHMU0_BASE + CXL_CHMU_INSTANCES_PER_BLOCK,
 };
 
 #define DWORD_BYTE 4
@@ -499,6 +502,8 @@ static void build_dvsecs(CXLType3Dev *ct3d)
             RBI_CXL_CPMU_REG | CXL_DEVICE_REG_BAR_IDX;
         regloc_dvsec->reg_base[2 + i].hi = 0;
     }
+    regloc_dvsec->reg_base[4].lo = CXL_CHMU_OFFSET(0) | RBI_CXL_CHMU_REG |
+        CXL_DEVICE_REG_BAR_IDX;
     cxl_component_create_dvsec(cxl_cstate, CXL2_TYPE3_DEVICE,
                                REG_LOC_DVSEC_LENGTH, REG_LOC_DVSEC,
                                REG_LOC_DVSEC_REVID, (uint8_t *)regloc_dvsec);
@@ -535,6 +540,17 @@ static void hdm_decoder_commit(CXLType3Dev *ct3d, int which)
     ctrl = FIELD_DP32(ctrl, CXL_HDM_DECODER0_CTRL, COMMITTED, 1);
 
     stl_le_p(cache_mem + R_CXL_HDM_DECODER0_CTRL + which * hdm_inc, ctrl);
+
+    if (which == 0) {
+        uint32_t low, high;
+        low = ldl_le_p(cache_mem + R_CXL_HDM_DECODER0_BASE_LO);
+        high = ldl_le_p(cache_mem + R_CXL_HDM_DECODER0_BASE_HI);
+        ct3d->cxl_dstate.chmu[0].base = ((uint64_t)high << 32) | (low & 0xf0000000);
+        
+        low = ldl_le_p(cache_mem + R_CXL_HDM_DECODER0_SIZE_LO);
+        high = ldl_le_p(cache_mem + R_CXL_HDM_DECODER0_SIZE_HI);
+        ct3d->cxl_dstate.chmu[0].size = ((uint64_t)high << 32) | (low & 0xf0000000);
+    }
 }
 
 static void hdm_decoder_uncommit(CXLType3Dev *ct3d, int which)
@@ -1022,6 +1038,12 @@ static void ct3_realize(PCIDevice *pci_dev, Error **errp)
                                  CXL_T3_MSIX_CPMU0);
     cxl_cpmu_register_block_init(OBJECT(pci_dev), &ct3d->cxl_dstate, 1,
                                  CXL_T3_MSIX_CPMU1);
+    rc = cxl_chmu_register_block_init(OBJECT(pci_dev), &ct3d->cxl_dstate,
+                                      0, CXL_T3_MSIX_CHMU0_BASE, errp);
+    if (rc) {
+        goto err_free_special_ops;
+    }
+
     pci_register_bar(pci_dev, CXL_DEVICE_REG_BAR_IDX,
                      PCI_BASE_ADDRESS_SPACE_MEMORY |
                          PCI_BASE_ADDRESS_MEM_TYPE_64,
@@ -1332,6 +1354,7 @@ static const Property ct3_props[] = {
                                 speed, PCIE_LINK_SPEED_32),
     DEFINE_PROP_PCIE_LINK_WIDTH("x-width", CXLType3Dev,
                                 width, PCIE_LINK_WIDTH_16),
+    DEFINE_PROP_UINT16("chmu-port", CXLType3Dev, cxl_dstate.chmu[0].port, 0), 
 };
 
 static uint64_t get_lsa_size(CXLType3Dev *ct3d)

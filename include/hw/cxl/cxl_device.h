@@ -15,6 +15,7 @@
 #include "hw/register.h"
 #include "hw/cxl/cxl_events.h"
 
+#include "hw/cxl/cxl_chmu.h"
 #include "hw/cxl/cxl_cpmu.h"
 /*
  * The following is how a CXL device's Memory Device registers are laid out.
@@ -109,12 +110,20 @@
                   (x) * (1 << 16),                                      \
                   1 << 16)
 
+#define CXL_NUM_CHMU_INSTANCES 1
+#define CXL_CHMU_OFFSET(x)                                               \
+    QEMU_ALIGN_UP(CXL_MEMORY_DEVICE_REGISTERS_OFFSET +                  \
+                  CXL_MEMORY_DEVICE_REGISTERS_LENGTH +                  \
+                  (1 << 16) * CXL_NUM_CPMU_INSTANCES,                   \
+                  1 << 16)
+
 #define CXL_MMIO_SIZE                                                   \
     QEMU_ALIGN_UP(CXL_DEVICE_CAP_REG_SIZE +                             \
                   CXL_DEVICE_STATUS_REGISTERS_LENGTH +                  \
                   CXL_MAILBOX_REGISTERS_LENGTH +                        \
                   CXL_MEMORY_DEVICE_REGISTERS_LENGTH +                  \
-                  CXL_NUM_CPMU_INSTANCES * (1 << 16),                   \
+                  CXL_NUM_CPMU_INSTANCES * (1 << 16) +                  \
+                  CXL_NUM_CHMU_INSTANCES * (1 << 16),                   \
                   (1 << 16))
 
 /* CXL r3.1 Table 8-34: Command Return Codes */
@@ -251,6 +260,7 @@ typedef struct CXLCCI {
 typedef struct cxl_device_state {
     MemoryRegion device_registers;
     MemoryRegion cpmu_registers[CXL_NUM_CPMU_INSTANCES];
+    MemoryRegion chmu_registers[1];
     /* CXL r3.1 Section 8.2.8.3: Device Status Registers */
     struct {
         MemoryRegion device;
@@ -300,6 +310,7 @@ typedef struct cxl_device_state {
 
     const struct cxl_cmd (*cxl_cmd_set)[256];
     CPMUState cpmu[CXL_NUM_CPMU_INSTANCES];
+    CHMUState chmu[1];
     CXLEventLog event_logs[CXL_EVENT_TYPE_MAX];
 } CXLDeviceState;
 
