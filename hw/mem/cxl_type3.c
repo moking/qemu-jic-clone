@@ -541,6 +541,7 @@ static void hdm_decoder_commit(CXLType3Dev *ct3d, int which)
 
     stl_le_p(cache_mem + R_CXL_HDM_DECODER0_CTRL + which * hdm_inc, ctrl);
 
+    cfmws_update_non_interleaved();
     if (which == 0) {
         uint32_t low, high;
         low = ldl_le_p(cache_mem + R_CXL_HDM_DECODER0_BASE_LO);
