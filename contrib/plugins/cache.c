@@ -7,9 +7,16 @@
 
 #include <inttypes.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <glib.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 
 #include <qemu-plugin.h>
+
+static int client_socket = -1;
+static uint64_t missfilterbase;
+static uint64_t missfiltersize;
 
 #define STRTOLL(x) g_ascii_strtoll(x, NULL, 10)
 
@@ -104,6 +111,7 @@ static Cache **l2_ucaches;
 static GMutex *l1_dcache_locks;
 static GMutex *l1_icache_locks;
 static GMutex *l2_ucache_locks;
+static GMutex *socket_lock;
 
 static uint64_t l1_dmem_accesses;
 static uint64_t l1_imem_accesses;
@@ -385,6 +393,21 @@ static bool access_cache(Cache *cache, uint64_t addr)
     return false;
 }
 
+static void miss(uint64_t paddr)
+{
+    if (client_socket < 0) {
+        return;
+    }
+
+    if (paddr < missfilterbase || paddr >= missfilterbase + missfiltersize) {
+        return;
+    }
+
+    g_mutex_lock(socket_lock);
+    send(client_socket, &paddr, sizeof(paddr), 0);
+    g_mutex_unlock(socket_lock);
+}
+
 static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
                             uint64_t vaddr, void *userdata)
 {
@@ -395,9 +418,6 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
     bool hit_in_l1;
 
     hwaddr = qemu_plugin_get_hwaddr(info, vaddr);
-    if (hwaddr && qemu_plugin_hwaddr_is_io(hwaddr)) {
-        return;
-    }
 
     effective_addr = hwaddr ? qemu_plugin_hwaddr_phys_addr(hwaddr) : vaddr;
     cache_idx = vcpu_index % cores;
@@ -412,7 +432,11 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
     l1_dcaches[cache_idx]->accesses++;
     g_mutex_unlock(&l1_dcache_locks[cache_idx]);
 
-    if (hit_in_l1 || !use_l2) {
+    if (hit_in_l1) {
+        return;
+    }
+    if (!use_l2) {
+        miss(effective_addr);
         /* No need to access L2 */
         return;
     }
@@ -422,6 +446,7 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
         insn = userdata;
         __atomic_fetch_add(&insn->l2_misses, 1, __ATOMIC_SEQ_CST);
         l2_ucaches[cache_idx]->misses++;
+        miss(effective_addr);
     }
     l2_ucaches[cache_idx]->accesses++;
     g_mutex_unlock(&l2_ucache_locks[cache_idx]);
@@ -447,8 +472,12 @@ static void vcpu_insn_exec(unsigned int vcpu_index, void *userdata)
     l1_icaches[cache_idx]->accesses++;
     g_mutex_unlock(&l1_icache_locks[cache_idx]);
 
-    if (hit_in_l1 || !use_l2) {
-        /* No need to access L2 */
+    if (hit_in_l1) {
+        return;
+    }
+
+    if (!use_l2) {
+        miss(insn_addr);
         return;
     }
 
@@ -739,14 +768,16 @@ QEMU_PLUGIN_EXPORT
 int qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info,
                         int argc, char **argv)
 {
-    int i;
+    int i, port;
     int l1_iassoc, l1_iblksize, l1_icachesize;
     int l1_dassoc, l1_dblksize, l1_dcachesize;
     int l2_assoc, l2_blksize, l2_cachesize;
+    struct sockaddr_in server_addr;
 
     limit = 32;
     sys = info->system_emulation;
 
+    port = -1;
     l1_dassoc = 8;
     l1_dblksize = 64;
     l1_dcachesize = l1_dblksize * l1_dassoc * 32;
@@ -808,10 +839,38 @@ int qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info,
                 fprintf(stderr, "invalid eviction policy: %s\n", opt);
                 return -1;
             }
+        } else if (g_strcmp0(tokens[0], "port") == 0) {
+            port = STRTOLL(tokens[1]);
+        } else if (g_strcmp0(tokens[0], "missfilterbase") == 0) {
+            missfilterbase = STRTOLL(tokens[1]);
+        } else if (g_strcmp0(tokens[0], "missfiltersize") == 0) {
+            missfiltersize = STRTOLL(tokens[1]);
         } else {
             fprintf(stderr, "option parsing failed: %s\n", opt);
             return -1;
         }
+    }
+    if (port >= -1) {
+        uint64_t paddr = 42; /* hello, I'm a provider */
+        client_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (client_socket < 0) {
+            printf("failed to create a socket\n");
+            return -1;
+        }
+        printf("Cache miss reported on on %lx size %lx\n",
+               missfilterbase, missfiltersize);
+        memset((char *)&server_addr, 0, sizeof(server_addr));
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        server_addr.sin_port = htons(port);
+
+        if (connect(client_socket, (struct sockaddr *)&server_addr,
+                    sizeof(server_addr)) < 0) {
+            close(client_socket);
+            return -1;
+        }
+        /* Let it know we are a data provider */
+        send(client_socket, &paddr, sizeof(paddr), 0);
     }
 
     policy_init();
@@ -839,6 +898,8 @@ int qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info,
         fprintf(stderr, "%s\n", err);
         return -1;
     }
+
+    socket_lock = g_new0(GMutex, 1);
 
     l1_dcache_locks = g_new0(GMutex, cores);
     l1_icache_locks = g_new0(GMutex, cores);
