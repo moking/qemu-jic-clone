@@ -188,6 +188,7 @@ static const MemMapEntry base_memmap[] = {
     [VIRT_NVDIMM_ACPI] =        { 0x09090000, NVDIMM_ACPI_IO_LEN},
     [VIRT_PVTIME] =             { 0x090a0000, 0x00010000 },
     [VIRT_SECURE_GPIO] =        { 0x090b0000, 0x00001000 },
+    [VIRT_HISI_HHA] =           { 0x090c0000, 0x00040000 },
     [VIRT_MMIO] =               { 0x0a000000, 0x00000200 },
     [VIRT_I2C] =                { 0x0b000000, 0x00004000 },
     [VIRT_RESET_FAKE] =         { 0x0b004000, 0x00000010 },
@@ -2150,6 +2151,18 @@ static void virt_cpu_post_init(VirtMachineState *vms, MemoryRegion *sysmem)
         }
     }
 }
+static void create_hisi_hha(MachineState *ms)
+{
+        VirtMachineState *vms = VIRT_MACHINE(ms);
+        int i;
+
+        for (i = 0; i < 2; i++) {
+            struct DeviceState *dev = qdev_new("hisi_hha");
+            sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+            sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, vms->memmap[VIRT_HISI_HHA].base + i * 0x10000);
+        }
+        
+}
 
 static void create_mctp(MachineState *ms)
 {
@@ -2562,6 +2575,7 @@ static void machvirt_init(MachineState *machine)
 
     create_mctp(machine);
 
+    create_hisi_hha(machine);
      /* connect powerdown request */
      vms->powerdown_notifier.notify = virt_powerdown_req;
      qemu_register_powerdown_notifier(&vms->powerdown_notifier);

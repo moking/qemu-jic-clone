@@ -392,6 +392,24 @@ static void acpi_dsdt_add_pci(Aml *scope, const MemMapEntry *memmap,
     }
 }
 
+static void acpi_dsdt_add_hisi_hha(Aml *scope, const MemMapEntry *memmap)
+{
+    int i;
+
+    for (i = 0; i < 2; i++) {
+        Aml *dev, *crs;
+
+        dev = aml_device("HHA%u", i);
+        aml_append(dev, aml_name_decl("_HID", aml_string("HISI0511")));
+        aml_append(dev, aml_name_decl("_UID", aml_int(0)));
+        crs = aml_resource_template();
+        aml_append(crs, aml_memory32_fixed(memmap->base + 0x10000 * i, 0x10000,
+                                           AML_READ_WRITE));
+        aml_append(dev, aml_name_decl("_CRS", crs));
+        aml_append(scope, dev);
+    }
+}
+
 static void acpi_dsdt_add_gpio(Aml *scope, const MemMapEntry *gpio_memmap,
                                            uint32_t gpio_irq)
 {
@@ -1110,6 +1128,7 @@ build_dsdt(GArray *table_data, BIOSLinker *linker, VirtMachineState *vms)
         acpi_dsdt_add_gpio(scope, &memmap[VIRT_GPIO],
                            (irqmap[VIRT_GPIO] + ARM_SPI_BASE));
     }
+    acpi_dsdt_add_hisi_hha(scope, &memmap[VIRT_HISI_HHA]);
 
     if (vms->acpi_dev) {
         uint32_t event = object_property_get_uint(OBJECT(vms->acpi_dev),

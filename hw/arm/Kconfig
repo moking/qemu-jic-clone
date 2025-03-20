@@ -14,6 +14,7 @@ config ARM_VIRT
     imply IOMMUFD
     select ARM_GIC
     select ACPI
+    select HISI_HHA
     select ARM_SMMUV3
     select GPIO_KEY
     select DEVICE_TREE
@@ -689,3 +690,6 @@ config ARMSSE
     select UNIMP
     select SSE_COUNTER
     select SSE_TIMER
+
+config HISI_HHA
+    bool
