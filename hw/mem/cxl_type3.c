@@ -998,6 +998,15 @@ static void init_alert_config(CXLType3Dev *ct3d)
     };
 }
 
+/* FIXME: We may not need to make all the mailbox sharable */
+static void ct3_alloc_mailboxs(CXLType3Dev *ct3d)
+{
+    ct3d->oob_mctp_cci = g_malloc0(sizeof(*ct3d->oob_mctp_cci));
+    ct3d->vdm_fm_owned_ld_mctp_cci
+        = g_malloc0(sizeof(*ct3d->vdm_fm_owned_ld_mctp_cci));
+    ct3d->ld0_cci = g_malloc0(sizeof(*ct3d->ld0_cci));
+}
+
 void ct3_realize(PCIDevice *pci_dev, Error **errp)
 {
     ERRP_GUARD();
@@ -1014,6 +1023,8 @@ void ct3_realize(PCIDevice *pci_dev, Error **errp)
     if (!cxl_setup_memory(ct3d, errp)) {
         return;
     }
+
+    ct3_alloc_mailboxs(ct3d);
 
     pci_config_set_prog_interface(pci_conf, 0x10);
 
@@ -1129,6 +1140,13 @@ err_free_special_ops:
     return;
 }
 
+static void ct3_free_mailboxs(CXLType3Dev *ct3d)
+{
+    g_free(ct3d->oob_mctp_cci);
+    g_free(ct3d->vdm_fm_owned_ld_mctp_cci);
+    g_free(ct3d->ld0_cci);
+}
+
 void ct3_exit(PCIDevice *pci_dev)
 {
     CXLType3Dev *ct3d = CXL_TYPE3(pci_dev);
@@ -1140,6 +1158,7 @@ void ct3_exit(PCIDevice *pci_dev)
     msix_uninit_exclusive_bar(pci_dev);
     g_free(regs->special_ops);
     cxl_destroy_cci(&ct3d->cci);
+    ct3_free_mailboxs(ct3d);
     if (ct3d->dc.host_dc) {
         cxl_destroy_dc_regions(ct3d);
         address_space_destroy(&ct3d->dc.host_dc_as);
@@ -1341,16 +1360,16 @@ void ct3d_reset(DeviceState *dev)
      * Bring up an endpoint to target with MCTP over VDM.
      * This device is emulating an MLD with single LD for now.
      */
-    if (ct3d->vdm_fm_owned_ld_mctp_cci.initialized) {
-        cxl_destroy_cci(&ct3d->vdm_fm_owned_ld_mctp_cci);
+    if (ct3d->vdm_fm_owned_ld_mctp_cci->initialized) {
+        cxl_destroy_cci(ct3d->vdm_fm_owned_ld_mctp_cci);
     }
-    cxl_initialize_t3_fm_owned_ld_mctpcci(&ct3d->vdm_fm_owned_ld_mctp_cci,
+    cxl_initialize_t3_fm_owned_ld_mctpcci(ct3d->vdm_fm_owned_ld_mctp_cci,
                                           DEVICE(ct3d), DEVICE(ct3d),
                                           512); /* Max payload made up */
-    if (ct3d->ld0_cci.initialized) {
-        cxl_destroy_cci(&ct3d->ld0_cci);
+    if (ct3d->ld0_cci->initialized) {
+        cxl_destroy_cci(ct3d->ld0_cci);
     }
-    cxl_initialize_t3_ld_cci(&ct3d->ld0_cci, DEVICE(ct3d), DEVICE(ct3d),
+    cxl_initialize_t3_ld_cci(ct3d->ld0_cci, DEVICE(ct3d), DEVICE(ct3d),
                              512); /* Max payload made up */
 }
 

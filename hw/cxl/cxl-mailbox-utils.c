@@ -204,7 +204,7 @@ static CXLRetCode cmd_tunnel_management_cmd(const struct cxl_cmd *cmd,
             /* Only pretending to have one for now! */
             return CXL_MBOX_INVALID_INPUT;
         }
-        target_cci = &ct3d->ld0_cci;
+        target_cci = ct3d->ld0_cci;
     } else if (object_dynamic_cast(OBJECT(cci->d), TYPE_CXL_USP)) {
         CXLUpstreamPort *usp = CXL_USP(cci->d);
 
@@ -221,7 +221,7 @@ static CXLRetCode cmd_tunnel_management_cmd(const struct cxl_cmd *cmd,
         if (object_dynamic_cast(OBJECT(tunnel_target), TYPE_CXL_TYPE3)) {
             CXLType3Dev *ct3d = CXL_TYPE3(tunnel_target);
             /* Tunneled VDMs always land on FM Owned LD */
-            target_cci = &ct3d->vdm_fm_owned_ld_mctp_cci;
+            target_cci = ct3d->vdm_fm_owned_ld_mctp_cci;
         } else {
             return CXL_MBOX_INVALID_INPUT;
         }

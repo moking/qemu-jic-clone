@@ -249,7 +249,7 @@ static void i2c_mctp_cxl_realize(DeviceState *d, Error **errp)
         CXLType3Dev *ct3d = CXL_TYPE3(s->target);
 
         s->type = cxl_type3;
-        s->cci = &ct3d->oob_mctp_cci;
+        s->cci = ct3d->oob_mctp_cci;
 
         cxl_initialize_t3_fm_owned_ld_mctpcci(s->cci, DEVICE(s->target), d,
                                               MCTP_CXL_MAILBOX_BYTES);
