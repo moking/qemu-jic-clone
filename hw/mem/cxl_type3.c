@@ -1007,6 +1007,115 @@ static void ct3_alloc_mailboxs(CXLType3Dev *ct3d)
     ct3d->ld0_cci = g_malloc0(sizeof(*ct3d->ld0_cci));
 }
 
+static int cxl_mbox_shm_open(const char *filename, int flags)
+{
+    char name[128];
+    snprintf(name, sizeof(name), "/%s", filename);
+    return shm_open(name, flags, 0666);
+}
+
+static int cxl_mbox_shm_unlink(const char *filename)
+{
+    char name[128];
+    snprintf(name, sizeof(name), "/%s", filename);
+    return shm_unlink(name);
+}
+
+static int cxl_mbox_shm_create(const char *filename, size_t size)
+{
+    int fd, rc;
+
+    fd = cxl_mbox_shm_open(filename, O_RDWR | O_CREAT);
+    if (fd == -1) {
+        return -1;
+    }
+
+    rc = ftruncate(fd, size);
+
+    if (rc) {
+        close(fd);
+        return -1;
+    }
+
+    return fd;
+}
+
+static CXLCCI *cxl_mbox_shm_map(int fd, size_t size)
+{
+    void *map;
+
+    if (fd < 0) {
+        return NULL;
+    }
+
+    map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) {
+        return NULL;
+    }
+
+    return (CXLCCI *)map;
+}
+
+#define CXL_MBOX_SHM_CREATE(ct3d, name, size)                           \
+    do {                                                                \
+        ct3d->name##_fd = cxl_mbox_shm_create(#name, size);             \
+        if (ct3d->name##_fd < 0) {                                      \
+            return -1;                                                  \
+        }                                                               \
+    } while (0)
+
+#define CXL_MBOX_SHM_OPEN(ct3d, name, flag)                             \
+    do {                                                                \
+        ct3d->name##_fd = cxl_mbox_shm_open(#name, flag);               \
+        if (ct3d->name##_fd < 0) {                                      \
+            return -1;                                                  \
+        }                                                               \
+    } while (0)
+
+#define CXL_DESTROY_MBOX_SHM(ct3d, name)                                \
+    do {                                                                \
+        munmap(ct3d->name, sizeof(*ct3d->name));                        \
+        close(ct3d->name##_fd);                                         \
+        cxl_mbox_shm_unlink(#name);                                     \
+    } while (0)
+
+#define CXL_MBOX_SHM_MAP(ct3d, name)                                    \
+    do {                                                                \
+        if (ct3d->name##_fd > 0) {                                      \
+            ct3d->name = cxl_mbox_shm_map(ct3d->name##_fd, sizeof(*ct3d->name));\
+            if (!ct3d->name) {                                          \
+                munmap(ct3d->name, sizeof(*ct3d->name));                \
+                close(ct3d->name##_fd);                                 \
+                cxl_mbox_shm_unlink(#name);                             \
+            }                                                           \
+        }                                                               \
+    } while (0)
+
+/*
+ * FIXME: no error handling added yet
+ */
+static int ct3_setup_mbox_shm(CXLType3Dev *ct3d)
+{
+    int rc = 0;
+
+    if (ct3d->mb_share_init) {
+        CXL_MBOX_SHM_CREATE(ct3d, oob_mctp_cci, sizeof(*ct3d->oob_mctp_cci));
+        CXL_MBOX_SHM_CREATE(ct3d, vdm_fm_owned_ld_mctp_cci,
+                            sizeof(*ct3d->vdm_fm_owned_ld_mctp_cci));
+        CXL_MBOX_SHM_CREATE(ct3d, ld0_cci, sizeof(*ct3d->ld0_cci));
+    } else {
+        CXL_MBOX_SHM_OPEN(ct3d, oob_mctp_cci, O_RDWR);
+        CXL_MBOX_SHM_OPEN(ct3d, vdm_fm_owned_ld_mctp_cci, O_RDWR);
+        CXL_MBOX_SHM_OPEN(ct3d, ld0_cci, O_RDWR);
+    }
+
+    CXL_MBOX_SHM_MAP(ct3d, oob_mctp_cci);
+    CXL_MBOX_SHM_MAP(ct3d, vdm_fm_owned_ld_mctp_cci);
+    CXL_MBOX_SHM_MAP(ct3d, ld0_cci);
+
+    return rc;
+}
+
 void ct3_realize(PCIDevice *pci_dev, Error **errp)
 {
     ERRP_GUARD();
@@ -1024,7 +1133,14 @@ void ct3_realize(PCIDevice *pci_dev, Error **errp)
         return;
     }
 
-    ct3_alloc_mailboxs(ct3d);
+    if (!ct3d->share_mb) {
+        ct3_alloc_mailboxs(ct3d);
+    } else {
+        rc = ct3_setup_mbox_shm(ct3d);
+        if (rc) {
+            return;
+        }
+    }
 
     pci_config_set_prog_interface(pci_conf, 0x10);
 
@@ -1147,6 +1263,13 @@ static void ct3_free_mailboxs(CXLType3Dev *ct3d)
     g_free(ct3d->ld0_cci);
 }
 
+static void ct3_destroy_mbox_shm(CXLType3Dev *ct3d)
+{
+    CXL_DESTROY_MBOX_SHM(ct3d, oob_mctp_cci);
+    CXL_DESTROY_MBOX_SHM(ct3d, vdm_fm_owned_ld_mctp_cci);
+    CXL_DESTROY_MBOX_SHM(ct3d, ld0_cci);
+}
+
 void ct3_exit(PCIDevice *pci_dev)
 {
     CXLType3Dev *ct3d = CXL_TYPE3(pci_dev);
@@ -1158,7 +1281,11 @@ void ct3_exit(PCIDevice *pci_dev)
     msix_uninit_exclusive_bar(pci_dev);
     g_free(regs->special_ops);
     cxl_destroy_cci(&ct3d->cci);
-    ct3_free_mailboxs(ct3d);
+    if (!ct3d->share_mb) {
+        ct3_free_mailboxs(ct3d);
+    } else {
+        ct3_destroy_mbox_shm(ct3d);
+    }
     if (ct3d->dc.host_dc) {
         cxl_destroy_dc_regions(ct3d);
         address_space_destroy(&ct3d->dc.host_dc_as);
@@ -1391,7 +1518,9 @@ static const Property ct3_props[] = {
                                 speed, PCIE_LINK_SPEED_32),
     DEFINE_PROP_PCIE_LINK_WIDTH("x-width", CXLType3Dev,
                                 width, PCIE_LINK_WIDTH_16),
-    DEFINE_PROP_UINT16("chmu-port", CXLType3Dev, cxl_dstate.chmu[0].port, 0), 
+    DEFINE_PROP_UINT16("chmu-port", CXLType3Dev, cxl_dstate.chmu[0].port, 0),
+    DEFINE_PROP_BOOL("share-mb", CXLType3Dev, share_mb, false),
+    DEFINE_PROP_BOOL("mb-share-init", CXLType3Dev, mb_share_init, false),
 };
 
 static uint64_t get_lsa_size(CXLType3Dev *ct3d)

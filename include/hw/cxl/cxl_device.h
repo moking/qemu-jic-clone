@@ -657,6 +657,12 @@ struct CXLType3Dev {
     CXLCCI *vdm_fm_owned_ld_mctp_cci;
     CXLCCI *ld0_cci;
 
+    /* only valid if share_mb is true for setting up mbox as shm */
+    int cci_fd;
+    int oob_mctp_cci_fd;
+    int vdm_fm_owned_ld_mctp_cci_fd;
+    int ld0_cci_fd;
+
     CXLAlertConfig alert_config;
 
     /* PCIe link characteristics */
@@ -707,6 +713,9 @@ struct CXLType3Dev {
     } dc;
 
     struct CXLSanitizeInfo *media_op_sanitize;
+
+    bool share_mb;
+    bool mb_share_init;
 };
 
 #define TYPE_CXL_TYPE3 "cxl-type3"
