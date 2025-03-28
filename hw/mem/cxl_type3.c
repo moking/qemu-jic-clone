@@ -29,6 +29,7 @@
 #include "system/numa.h"
 #include "hw/cxl/cxl.h"
 #include "hw/pci/msix.h"
+#include "hw/cxl/cxl_extent.h"
 
 /* type3 device private */
 enum CXL_T3_MSIX_VECTOR {
@@ -233,12 +234,12 @@ static int ct3_build_cdat_table(CDATSubHeader ***cdat_table, void *priv)
         for (i = 0; i < ct3d->dc.num_regions; i++) {
             ct3_build_cdat_entries_for_mr(&(table[cur_ent]),
                                           dsmad_handle++,
-                                          ct3d->dc.regions[i].len,
+                                          ct3d->dc.shared_info->regions[i].len,
                                           false, true, region_base);
-            ct3d->dc.regions[i].dsmadhandle = dsmad_handle - 1;
+            ct3d->dc.shared_info->regions[i].dsmadhandle = dsmad_handle - 1;
 
             cur_ent += CT3_CDAT_NUM_ENTRIES;
-            region_base += ct3d->dc.regions[i].len;
+            region_base += ct3d->dc.shared_info->regions[i].len;
         }
     }
 
@@ -801,7 +802,13 @@ static bool cxl_create_dc_regions(CXLType3Dev *ct3d, Error **errp)
         return false;
     }
 
-    for (i = 0, region = &ct3d->dc.regions[0];
+    ct3d->dc.shared_info = g_malloc0(sizeof(*ct3d->dc.shared_info));
+    ct3d->dc.shared_info->extents.head = -1;
+    for (i=0; i < sizeof(ct3d->dc.shared_info->pending_groups); i++) {
+        ct3d->dc.shared_info->pending_groups[i].list.head = -1;
+    }
+
+    for (i = 0, region = &ct3d->dc.shared_info->regions[0];
          i < ct3d->dc.num_regions;
          i++, region++, region_base += region_len) {
         *region = (CXLDCRegion) {
@@ -815,40 +822,26 @@ static bool cxl_create_dc_regions(CXLType3Dev *ct3d, Error **errp)
         ct3d->dc.total_capacity += region->len;
         region->blk_bitmap = bitmap_new(region->len / region->block_size);
     }
-    QTAILQ_INIT(&ct3d->dc.extents);
-    QTAILQ_INIT(&ct3d->dc.extents_pending);
 
     return true;
 }
 
 static void cxl_destroy_dc_regions(CXLType3Dev *ct3d)
 {
-    CXLDCExtent *ent, *ent_next;
-    CXLDCExtentGroup *group, *group_next;
     CXLType3Class *cvc = CXL_TYPE3_CLASS(ct3d);
     int i;
     CXLDCRegion *region;
 
-    QTAILQ_FOREACH_SAFE(ent, &ct3d->dc.extents, node, ent_next) {
-        cxl_remove_extent_from_extent_list(&ct3d->dc.extents, ent);
-    }
-
-    QTAILQ_FOREACH_SAFE(group, &ct3d->dc.extents_pending, node, group_next) {
-        QTAILQ_REMOVE(&ct3d->dc.extents_pending, group, node);
-        QTAILQ_FOREACH_SAFE(ent, &group->list, node, ent_next) {
-            cxl_remove_extent_from_extent_list(&group->list, ent);
-        }
-        g_free(group);
-    }
-
     for (i = 0; i < ct3d->dc.num_regions; i++) {
-        region = &ct3d->dc.regions[i];
+        region = &ct3d->dc.shared_info->regions[i];
         g_free(region->blk_bitmap);
         if (cvc->mhd_release_extent) {
             cvc->mhd_release_extent(&ct3d->parent_obj, region->base,
                                     region->len);
         }
     }
+
+    g_free(ct3d->dc.shared_info);
 }
 
 static bool cxl_setup_memory(CXLType3Dev *ct3d, Error **errp)
@@ -2136,74 +2129,6 @@ typedef enum CXLDCEventType {
 } CXLDCEventType;
 
 /*
- * Check whether the range [dpa, dpa + len - 1] has overlaps with extents in
- * the list.
- * Return value: return true if has overlaps; otherwise, return false
- */
-static bool cxl_extents_overlaps_dpa_range(CXLDCExtentList *list,
-                                           uint64_t dpa, uint64_t len)
-{
-    CXLDCExtent *ent;
-    Range range1, range2;
-
-    if (!list) {
-        return false;
-    }
-
-    range_init_nofail(&range1, dpa, len);
-    QTAILQ_FOREACH(ent, list, node) {
-        range_init_nofail(&range2, ent->start_dpa, ent->len);
-        if (range_overlaps_range(&range1, &range2)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/*
- * Check whether the range [dpa, dpa + len - 1] is contained by extents in
- * the list.
- * Will check multiple extents containment once superset release is added.
- * Return value: return true if range is contained; otherwise, return false
- */
-bool cxl_extents_contains_dpa_range(CXLDCExtentList *list,
-                                    uint64_t dpa, uint64_t len)
-{
-    CXLDCExtent *ent;
-    Range range1, range2;
-
-    if (!list) {
-        return false;
-    }
-
-    range_init_nofail(&range1, dpa, len);
-    QTAILQ_FOREACH(ent, list, node) {
-        range_init_nofail(&range2, ent->start_dpa, ent->len);
-        if (range_contains_range(&range2, &range1)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool cxl_extent_groups_overlaps_dpa_range(CXLDCExtentGroupList *list,
-                                                 uint64_t dpa, uint64_t len)
-{
-    CXLDCExtentGroup *group;
-
-    if (!list) {
-        return false;
-    }
-
-    QTAILQ_FOREACH(group, list, node) {
-        if (cxl_extents_overlaps_dpa_range(&group->list, dpa, len)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/*
  * The main function to process dynamic capacity event with extent list.
  * Currently DC extents add/release requests are processed.
  */
@@ -2219,7 +2144,7 @@ static void qmp_cxl_process_dynamic_capacity_prescriptive(const char *path,
     uint8_t flags = 1 << CXL_EVENT_TYPE_INFO;
     uint32_t num_extents = 0;
     CxlDynamicCapacityExtentList *list;
-    CXLDCExtentGroup *group = NULL;
+    CXLDCExtentGroup *group;
     g_autofree CXLDCExtentRaw *extents = NULL;
     uint8_t enc_log = CXL_EVENT_TYPE_DYNAMIC_CAP;
     uint64_t dpa, offset, len, block_size;
@@ -2244,15 +2169,17 @@ static void qmp_cxl_process_dynamic_capacity_prescriptive(const char *path,
         error_setg(errp, "region id is too large");
         return;
     }
-    block_size = dcd->dc.regions[rid].block_size;
-    blk_bitmap = bitmap_new(dcd->dc.regions[rid].len / block_size);
+    block_size = dcd->dc.shared_info->regions[rid].block_size;
+    blk_bitmap = bitmap_new(dcd->dc.shared_info->regions[rid].len / block_size);
 
+    group = alloc_dc_extent_group(dcd);
+    g_assert(group);
     /* Sanity check and count the extents */
     list = records;
     while (list) {
         offset = list->value->offset;
         len = list->value->len;
-        dpa = offset + dcd->dc.regions[rid].base;
+        dpa = offset + dcd->dc.shared_info->regions[rid].base;
 
         if (len == 0) {
             error_setg(errp, "extent with 0 length is not allowed");
@@ -2264,7 +2191,7 @@ static void qmp_cxl_process_dynamic_capacity_prescriptive(const char *path,
             return;
         }
 
-        if (offset + len > dcd->dc.regions[rid].len) {
+        if (offset + len > dcd->dc.shared_info->regions[rid].len) {
             error_setg(errp, "extent range is beyond the region end");
             return;
         }
@@ -2278,8 +2205,7 @@ static void qmp_cxl_process_dynamic_capacity_prescriptive(const char *path,
         bitmap_set(blk_bitmap, offset / block_size, len / block_size);
 
         if (type == DC_EVENT_RELEASE_CAPACITY) {
-            if (cxl_extent_groups_overlaps_dpa_range(&dcd->dc.extents_pending,
-                                                     dpa, len)) {
+            if (cxl_extent_groups_overlaps_dpa_range(dcd, dpa, len)) {
                 error_setg(errp,
                            "cannot release extent with pending DPA range");
                 return;
@@ -2290,13 +2216,14 @@ static void qmp_cxl_process_dynamic_capacity_prescriptive(const char *path,
                 return;
             }
         } else if (type == DC_EVENT_ADD_CAPACITY) {
-            if (cxl_extents_overlaps_dpa_range(&dcd->dc.extents, dpa, len)) {
+            if (cxl_extents_overlaps_dpa_range(dcd,
+                                               &dcd->dc.shared_info->extents,
+                                               dpa, len)) {
                 error_setg(errp,
                            "cannot add DPA already accessible to the same LD");
                 return;
             }
-            if (cxl_extent_groups_overlaps_dpa_range(&dcd->dc.extents_pending,
-                                                     dpa, len)) {
+            if (cxl_extent_groups_overlaps_dpa_range(dcd, dpa, len)) {
                 error_setg(errp,
                            "cannot add DPA again while still pending");
                 return;
@@ -2320,14 +2247,15 @@ static void qmp_cxl_process_dynamic_capacity_prescriptive(const char *path,
     while (list) {
         offset = list->value->offset;
         len = list->value->len;
-        dpa = dcd->dc.regions[rid].base + offset;
+        dpa = dcd->dc.shared_info->regions[rid].base + offset;
 
         extents[i].start_dpa = dpa;
         extents[i].len = len;
         memset(extents[i].tag, 0, 0x10);
         extents[i].shared_seq = 0;
         if (type == DC_EVENT_ADD_CAPACITY) {
-            group = cxl_insert_extent_to_extent_group(group,
+            group = cxl_insert_extent_to_extent_group(dcd,
+                                                      group,
                                                       extents[i].start_dpa,
                                                       extents[i].len,
                                                       extents[i].tag,
@@ -2337,9 +2265,14 @@ static void qmp_cxl_process_dynamic_capacity_prescriptive(const char *path,
         list = list->next;
         i++;
     }
-    if (group) {
-        cxl_extent_group_list_insert_tail(&dcd->dc.extents_pending, group);
+
+    if (empty_dc_extent_group(group)) {
+       /* Need to return group to groups */
+       free_dc_extent_group(dcd, group);
     }
+
+    /* It seeems we do not need it any more, already handled in alloc_dc_extent_group */
+    /* cxl_extent_group_list_insert_tail(dcd, group); */
 
     /*
      * CXL r3.1 section 8.2.9.2.1.6: Dynamic Capacity Event Record
@@ -2446,16 +2379,16 @@ static void cxl_dcd_display_extent_list(const CXLType3Dev *dcd, const char *f,
         return;
     }
     if (accepted_list) {
-        CXLDCExtent *ent, *prev = NULL;
+        CXLDCExtent *ent, *next = NULL;
         fprintf(fp, "Print accepted extent info:\n");
 
-        EXTENTLIST_FOREACH(ent, prev, &dcd->dc.shared_info->extents, dcd) {
+        EXTENTLIST_FOREACH(ent, next, &dcd->dc.shared_info->extents, dcd) {
             fprintf(fp, "%d: [0x%lx - 0x%lx]\n", i++, ent->start_dpa,
                     ent->start_dpa + ent->len);
         }
     } else {
         CXLDCExtentGroup *group;
-        CXLDCExtent *ent, *prev = NULL;
+        CXLDCExtent *ent, *next = NULL;
         int j = 0;
 
         fprintf(fp, "Print pending-to-add extent info:\n");
@@ -2463,7 +2396,7 @@ static void cxl_dcd_display_extent_list(const CXLType3Dev *dcd, const char *f,
             fprintf(fp, "Group %d\n", j);
             group = &dcd->dc.shared_info->pending_groups[j];
 
-            EXTENTLIST_FOREACH(ent, prev, &group->list, dcd) {
+            EXTENTLIST_FOREACH(ent, next, &group->list, dcd) {
                 fprintf(fp, " %d: [0x%lx - 0x%lx]\n", i++, ent->start_dpa,
                         ent->start_dpa + ent->len);
             }

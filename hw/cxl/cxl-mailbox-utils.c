@@ -23,10 +23,10 @@
 #include "qemu/uuid.h"
 #include "system/hostmem.h"
 #include "qemu/range.h"
+#include "hw/cxl/cxl_extent.h"
 
 #define CXL_CAPACITY_MULTIPLIER   (256 * MiB)
 #define CXL_DC_EVENT_LOG_SIZE 8
-#define CXL_NUM_EXTENTS_SUPPORTED 512
 #define CXL_NUM_TAGS_SUPPORTED 0
 #define CXL_ALERTS_LIFE_USED_WARN_THRESH (1 << 0)
 #define CXL_ALERTS_OVER_TEMP_WARN_THRESH (1 << 1)
@@ -2802,17 +2802,17 @@ static CXLRetCode cmd_dcd_get_dyn_cap_config(const struct cxl_cmd *cmd,
     out->regions_returned = record_count;
     for (i = 0; i < record_count; i++) {
         stq_le_p(&out->records[i].base,
-                 ct3d->dc.regions[start_rid + i].base);
+                 ct3d->dc.shared_info->regions[start_rid + i].base);
         stq_le_p(&out->records[i].decode_len,
-                 ct3d->dc.regions[start_rid + i].decode_len /
+                 ct3d->dc.shared_info->regions[start_rid + i].decode_len /
                  CXL_CAPACITY_MULTIPLIER);
         stq_le_p(&out->records[i].region_len,
-                 ct3d->dc.regions[start_rid + i].len);
+                 ct3d->dc.shared_info->regions[start_rid + i].len);
         stq_le_p(&out->records[i].block_size,
-                 ct3d->dc.regions[start_rid + i].block_size);
+                 ct3d->dc.shared_info->regions[start_rid + i].block_size);
         stl_le_p(&out->records[i].dsmadhandle,
-                 ct3d->dc.regions[start_rid + i].dsmadhandle);
-        out->records[i].flags = ct3d->dc.regions[start_rid + i].flags;
+                 ct3d->dc.shared_info->regions[start_rid + i].dsmadhandle);
+        out->records[i].flags = ct3d->dc.shared_info->regions[start_rid + i].flags;
     }
     /*
      * TODO: Assign values once extents and tags are introduced
@@ -2820,7 +2820,7 @@ static CXLRetCode cmd_dcd_get_dyn_cap_config(const struct cxl_cmd *cmd,
      */
     stl_le_p(&extra_out->num_extents_supported, CXL_NUM_EXTENTS_SUPPORTED);
     stl_le_p(&extra_out->num_extents_available, CXL_NUM_EXTENTS_SUPPORTED -
-             ct3d->dc.total_extent_count);
+             ct3d->dc.shared_info->total_extent_count);
     stl_le_p(&extra_out->num_tags_supported, CXL_NUM_TAGS_SUPPORTED);
     stl_le_p(&extra_out->num_tags_available, CXL_NUM_TAGS_SUPPORTED);
 
@@ -2852,29 +2852,29 @@ static CXLRetCode cmd_dcd_get_dyn_cap_ext_list(const struct cxl_cmd *cmd,
         CXLDCExtentRaw records[];
     } QEMU_PACKED *out = (void *)payload_out;
     uint32_t start_extent_id = in->start_extent_id;
-    CXLDCExtentList *extent_list = &ct3d->dc.extents;
+    CXLDCExtentList *extent_list = &ct3d->dc.shared_info->extents;
     uint16_t record_count = 0, i = 0, record_done = 0;
     uint16_t out_pl_len, size;
-    CXLDCExtent *ent;
+    CXLDCExtent *ent, *next = NULL;
 
-    if (start_extent_id > ct3d->dc.total_extent_count) {
+    if (start_extent_id > ct3d->dc.shared_info->total_extent_count) {
         return CXL_MBOX_INVALID_INPUT;
     }
 
     record_count = MIN(in->extent_cnt,
-                       ct3d->dc.total_extent_count - start_extent_id);
+                       ct3d->dc.shared_info->total_extent_count - start_extent_id);
     size = CXL_MAILBOX_MAX_PAYLOAD_SIZE - sizeof(*out);
     record_count = MIN(record_count, size / sizeof(out->records[0]));
     out_pl_len = sizeof(*out) + record_count * sizeof(out->records[0]);
 
     stl_le_p(&out->count, record_count);
-    stl_le_p(&out->total_extents, ct3d->dc.total_extent_count);
-    stl_le_p(&out->generation_num, ct3d->dc.ext_list_gen_seq);
+    stl_le_p(&out->total_extents, ct3d->dc.shared_info->total_extent_count);
+    stl_le_p(&out->generation_num, ct3d->dc.shared_info->ext_list_gen_seq);
 
     if (record_count > 0) {
         CXLDCExtentRaw *out_rec = &out->records[record_done];
 
-        QTAILQ_FOREACH(ent, extent_list, node) {
+        EXTENTLIST_FOREACH(ent, next, extent_list, ct3d) {
             if (i++ < start_extent_id) {
                 continue;
             }
@@ -2910,7 +2910,7 @@ bool test_any_bits_set(const unsigned long *addr, unsigned long nr,
 CXLDCRegion *cxl_find_dc_region(CXLType3Dev *ct3d, uint64_t dpa, uint64_t len)
 {
     int i;
-    CXLDCRegion *region = &ct3d->dc.regions[0];
+    CXLDCRegion *region = &ct3d->dc.shared_info->regions[0];
 
     if (dpa < region->base ||
         dpa >= region->base + ct3d->dc.total_capacity) {
@@ -2926,7 +2926,7 @@ CXLDCRegion *cxl_find_dc_region(CXLType3Dev *ct3d, uint64_t dpa, uint64_t len)
      * cross multiple regions are not allowed.
      */
     for (i = ct3d->dc.num_regions - 1; i >= 0; i--) {
-        region = &ct3d->dc.regions[i];
+        region = &ct3d->dc.shared_info->regions[i];
         if (dpa >= region->base) {
             if (dpa + len > region->base + region->len) {
                 return NULL;
@@ -2936,70 +2936,6 @@ CXLDCRegion *cxl_find_dc_region(CXLType3Dev *ct3d, uint64_t dpa, uint64_t len)
     }
 
     return NULL;
-}
-
-void cxl_insert_extent_to_extent_list(CXLDCExtentList *list,
-                                             uint64_t dpa,
-                                             uint64_t len,
-                                             uint8_t *tag,
-                                             uint16_t shared_seq)
-{
-    CXLDCExtent *extent;
-
-    extent = g_new0(CXLDCExtent, 1);
-    extent->start_dpa = dpa;
-    extent->len = len;
-    if (tag) {
-        memcpy(extent->tag, tag, 0x10);
-    }
-    extent->shared_seq = shared_seq;
-
-    QTAILQ_INSERT_TAIL(list, extent, node);
-}
-
-void cxl_remove_extent_from_extent_list(CXLDCExtentList *list,
-                                        CXLDCExtent *extent)
-{
-    QTAILQ_REMOVE(list, extent, node);
-    g_free(extent);
-}
-
-/*
- * Add a new extent to the extent "group" if group exists;
- * otherwise, create a new group
- * Return value: the extent group where the extent is inserted.
- */
-CXLDCExtentGroup *cxl_insert_extent_to_extent_group(CXLDCExtentGroup *group,
-                                                    uint64_t dpa,
-                                                    uint64_t len,
-                                                    uint8_t *tag,
-                                                    uint16_t shared_seq)
-{
-    if (!group) {
-        group = g_new0(CXLDCExtentGroup, 1);
-        QTAILQ_INIT(&group->list);
-    }
-    cxl_insert_extent_to_extent_list(&group->list, dpa, len,
-                                     tag, shared_seq);
-    return group;
-}
-
-void cxl_extent_group_list_insert_tail(CXLDCExtentGroupList *list,
-                                       CXLDCExtentGroup *group)
-{
-    QTAILQ_INSERT_TAIL(list, group, node);
-}
-
-void cxl_extent_group_list_delete_front(CXLDCExtentGroupList *list)
-{
-    CXLDCExtent *ent, *ent_next;
-    CXLDCExtentGroup *group = QTAILQ_FIRST(list);
-
-    QTAILQ_REMOVE(list, group, node);
-    QTAILQ_FOREACH_SAFE(ent, &group->list, node, ent_next) {
-        cxl_remove_extent_from_extent_list(&group->list, ent);
-    }
-    g_free(group);
 }
 
 /*
@@ -3015,18 +2951,18 @@ static CXLRetCode cxl_detect_malformed_extent_list(CXLType3Dev *ct3d,
 {
     uint64_t min_block_size = UINT64_MAX;
     CXLDCRegion *region;
-    CXLDCRegion *lastregion = &ct3d->dc.regions[ct3d->dc.num_regions - 1];
+    CXLDCRegion *lastregion = &ct3d->dc.shared_info->regions[ct3d->dc.num_regions - 1];
     g_autofree unsigned long *blk_bitmap = NULL;
     uint64_t dpa, len;
     uint32_t i;
 
     for (i = 0; i < ct3d->dc.num_regions; i++) {
-        region = &ct3d->dc.regions[i];
+        region = &ct3d->dc.shared_info->regions[i];
         min_block_size = MIN(min_block_size, region->block_size);
     }
 
     blk_bitmap = bitmap_new((lastregion->base + lastregion->len -
-                             ct3d->dc.regions[0].base) / min_block_size);
+                             ct3d->dc.shared_info->regions[0].base) / min_block_size);
 
     for (i = 0; i < in->num_entries_updated; i++) {
         dpa = in->updated_entries[i].start_dpa;
@@ -3037,7 +2973,7 @@ static CXLRetCode cxl_detect_malformed_extent_list(CXLType3Dev *ct3d,
             return CXL_MBOX_INVALID_PA;
         }
 
-        dpa -= ct3d->dc.regions[0].base;
+        dpa -= ct3d->dc.shared_info->regions[0].base;
         if (dpa % region->block_size || len % region->block_size) {
             return CXL_MBOX_INVALID_EXTENT_LIST;
         }
@@ -3056,7 +2992,7 @@ static CXLRetCode cxl_dcd_add_dyn_cap_rsp_dry_run(CXLType3Dev *ct3d,
         const CXLUpdateDCExtentListInPl *in)
 {
     uint32_t i;
-    CXLDCExtent *ent;
+    CXLDCExtent *ent, *next = NULL;
     CXLDCExtentGroup *ext_group;
     uint64_t dpa, len;
     Range range1, range2;
@@ -3071,13 +3007,13 @@ static CXLRetCode cxl_dcd_add_dyn_cap_rsp_dry_run(CXLType3Dev *ct3d,
          * The host-accepted DPA range must be contained by the first extent
          * group in the pending list
          */
-        ext_group = QTAILQ_FIRST(&ct3d->dc.extents_pending);
-        if (!cxl_extents_contains_dpa_range(&ext_group->list, dpa, len)) {
+        ext_group = &ct3d->dc.shared_info->pending_groups[0];
+        if (!cxl_extents_contains_dpa_range(ct3d, &ext_group->list, dpa, len)) {
             return CXL_MBOX_INVALID_PA;
         }
 
         /* to-be-added range should not overlap with range already accepted */
-        QTAILQ_FOREACH(ent, &ct3d->dc.extents, node) {
+        EXTENTLIST_FOREACH(ent, next, &ct3d->dc.shared_info->extents, ct3d) {
             range_init_nofail(&range2, ent->start_dpa, ent->len);
             if (range_overlaps_range(&range1, &range2)) {
                 return CXL_MBOX_INVALID_PA;
@@ -3102,7 +3038,7 @@ static CXLRetCode cmd_dcd_add_dyn_cap_rsp(const struct cxl_cmd *cmd,
     CXLUpdateDCExtentListInPl *in = (void *)payload_in;
     CXLType3Dev *ct3d = CXL_TYPE3(cci->d);
     CXLType3Class *cvc = CXL_TYPE3_GET_CLASS(ct3d);
-    CXLDCExtentList *extent_list = &ct3d->dc.extents;
+    CXLDCExtentList *extent_list = &ct3d->dc.shared_info->extents;
     uint32_t i;
     uint64_t dpa, len;
     CXLRetCode ret;
@@ -3112,7 +3048,7 @@ static CXLRetCode cmd_dcd_add_dyn_cap_rsp(const struct cxl_cmd *cmd,
     }
 
     if (in->num_entries_updated == 0) {
-        cxl_extent_group_list_delete_front(&ct3d->dc.extents_pending);
+        cxl_extent_group_list_delete_front(ct3d);
         return CXL_MBOX_SUCCESS;
     }
 
@@ -3122,7 +3058,7 @@ static CXLRetCode cmd_dcd_add_dyn_cap_rsp(const struct cxl_cmd *cmd,
     }
 
     /* Adding extents causes exceeding device's extent tracking ability. */
-    if (in->num_entries_updated + ct3d->dc.total_extent_count >
+    if (in->num_entries_updated + ct3d->dc.shared_info->total_extent_count >
         CXL_NUM_EXTENTS_SUPPORTED) {
         return CXL_MBOX_RESOURCES_EXHAUSTED;
     }
@@ -3141,18 +3077,19 @@ static CXLRetCode cmd_dcd_add_dyn_cap_rsp(const struct cxl_cmd *cmd,
         dpa = in->updated_entries[i].start_dpa;
         len = in->updated_entries[i].len;
 
-        cxl_insert_extent_to_extent_list(extent_list, dpa, len, NULL, 0);
-        ct3d->dc.total_extent_count += 1;
+        cxl_insert_extent_to_extent_list(ct3d, extent_list, dpa, len, NULL, 0);
+        ct3d->dc.shared_info->total_extent_count += 1;
         ct3_set_region_block_backed(ct3d, dpa, len);
     }
 
     if (cvc->mhd_reclaim_extents) {
-        cvc->mhd_reclaim_extents(&ct3d->parent_obj, &ct3d->dc.extents_pending,
+        cvc->mhd_reclaim_extents(&ct3d->parent_obj,
+                                 (CXLDCExtentGroup **)&ct3d->dc.shared_info->pending_groups,
                                  in);
     }
 
     /* Remove the first extent group in the pending list */
-    cxl_extent_group_list_delete_front(&ct3d->dc.extents_pending);
+    cxl_extent_group_list_delete_front(ct3d);
 
     return CXL_MBOX_SUCCESS;
 }
@@ -3161,18 +3098,19 @@ static CXLRetCode cmd_dcd_add_dyn_cap_rsp(const struct cxl_cmd *cmd,
  * Copy extent list from src to dst
  * Return value: number of extents copied
  */
-static uint32_t copy_extent_list(CXLDCExtentList *dst,
+static uint32_t copy_extent_list(CXLType3Dev *ct3d, CXLDCExtentList *dst,
                                  const CXLDCExtentList *src)
 {
     uint32_t cnt = 0;
-    CXLDCExtent *ent;
+    CXLDCExtent *ent, *next = NULL;
 
     if (!dst || !src) {
         return 0;
     }
 
-    QTAILQ_FOREACH(ent, src, node) {
-        cxl_insert_extent_to_extent_list(dst, ent->start_dpa, ent->len,
+    dst->head = dst->tail = -1;
+    EXTENTLIST_FOREACH(ent, next, src, ct3d) {
+        cxl_insert_extent_to_extent_list(ct3d, dst, ent->start_dpa, ent->len,
                                          ent->tag, ent->shared_seq);
         cnt++;
     }
@@ -3183,15 +3121,14 @@ static CXLRetCode cxl_dc_extent_release_dry_run(CXLType3Dev *ct3d,
         const CXLUpdateDCExtentListInPl *in, CXLDCExtentList *updated_list,
         uint32_t *updated_list_size)
 {
-    CXLDCExtent *ent, *ent_next;
+    CXLDCExtent *ent;
     CXLType3Class *cvc = CXL_TYPE3_GET_CLASS(ct3d);
     uint64_t dpa, len;
     uint32_t i;
     int cnt_delta = 0;
     CXLRetCode ret = CXL_MBOX_SUCCESS;
 
-    QTAILQ_INIT(updated_list);
-    copy_extent_list(updated_list, &ct3d->dc.extents);
+    copy_extent_list(ct3d, updated_list, &ct3d->dc.shared_info->extents);
 
     for (i = 0; i < in->num_entries_updated; i++) {
         Range range;
@@ -3214,7 +3151,8 @@ static CXLRetCode cxl_dc_extent_release_dry_run(CXLType3Dev *ct3d,
 
         /* After this point, extent overflow is the only error can happen */
         while (len > 0) {
-            QTAILQ_FOREACH(ent, updated_list, node) {
+            CXLDCExtent *next = NULL;
+            EXTENTLIST_FOREACH(ent, next, updated_list, ct3d) {
                 range_init_nofail(&range, ent->start_dpa, ent->len);
 
                 if (range_contains(&range, dpa)) {
@@ -3231,23 +3169,23 @@ static CXLRetCode cxl_dc_extent_release_dry_run(CXLType3Dev *ct3d,
                     }
                     len_done = ent_len - len1 - len2;
 
-                    cxl_remove_extent_from_extent_list(updated_list, ent);
+                    cxl_remove_extent_from_extent_list(ct3d, updated_list, ent);
                     cnt_delta--;
 
                     if (len1) {
-                        cxl_insert_extent_to_extent_list(updated_list,
+                        cxl_insert_extent_to_extent_list(ct3d, updated_list,
                                                          ent_start_dpa,
                                                          len1, NULL, 0);
                         cnt_delta++;
                     }
                     if (len2) {
-                        cxl_insert_extent_to_extent_list(updated_list,
+                        cxl_insert_extent_to_extent_list(ct3d, updated_list,
                                                          dpa + len,
                                                          len2, NULL, 0);
                         cnt_delta++;
                     }
 
-                    if (cnt_delta + ct3d->dc.total_extent_count >
+                    if (cnt_delta + ct3d->dc.shared_info->total_extent_count >
                             CXL_NUM_EXTENTS_SUPPORTED) {
                         ret = CXL_MBOX_RESOURCES_EXHAUSTED;
                         goto free_and_exit;
@@ -3261,12 +3199,13 @@ static CXLRetCode cxl_dc_extent_release_dry_run(CXLType3Dev *ct3d,
     }
 free_and_exit:
     if (ret != CXL_MBOX_SUCCESS) {
-        QTAILQ_FOREACH_SAFE(ent, updated_list, node, ent_next) {
-            cxl_remove_extent_from_extent_list(updated_list, ent);
+        CXLDCExtent *next = NULL;
+        EXTENTLIST_FOREACH(ent, next, updated_list, ct3d) {
+            cxl_remove_extent_from_extent_list(ct3d, updated_list, ent);
         }
         *updated_list_size = 0;
     } else {
-        *updated_list_size = ct3d->dc.total_extent_count + cnt_delta;
+        *updated_list_size = ct3d->dc.shared_info->total_extent_count + cnt_delta;
     }
 
     return ret;
@@ -3286,7 +3225,7 @@ static CXLRetCode cmd_dcd_release_dyn_cap(const struct cxl_cmd *cmd,
     CXLType3Dev *ct3d = CXL_TYPE3(cci->d);
     CXLType3Class *cvc = CXL_TYPE3_GET_CLASS(ct3d);
     CXLDCExtentList updated_list;
-    CXLDCExtent *ent, *ent_next;
+    CXLDCExtent *ent, *next = NULL;
     uint32_t updated_list_size, i;
     uint64_t dpa, len;
     CXLRetCode ret;
@@ -3330,16 +3269,16 @@ static CXLRetCode cmd_dcd_release_dyn_cap(const struct cxl_cmd *cmd,
      * in the accepted list and copy extents in the updated_list to accepted
      * list and update the extent count;
      */
-    QTAILQ_FOREACH_SAFE(ent, &ct3d->dc.extents, node, ent_next) {
+    EXTENTLIST_FOREACH(ent, next, &ct3d->dc.shared_info->extents, ct3d) {
         ct3_clear_region_block_backed(ct3d, ent->start_dpa, ent->len);
-        cxl_remove_extent_from_extent_list(&ct3d->dc.extents, ent);
+        cxl_remove_extent_from_extent_list(ct3d, &ct3d->dc.shared_info->extents, ent);
     }
-    copy_extent_list(&ct3d->dc.extents, &updated_list);
-    QTAILQ_FOREACH_SAFE(ent, &updated_list, node, ent_next) {
+    copy_extent_list(ct3d, &ct3d->dc.shared_info->extents, &updated_list);
+    EXTENTLIST_FOREACH(ent, next, &updated_list, ct3d) {
         ct3_set_region_block_backed(ct3d, ent->start_dpa, ent->len);
-        cxl_remove_extent_from_extent_list(&updated_list, ent);
+        cxl_remove_extent_from_extent_list(ct3d, &updated_list, ent);
     }
-    ct3d->dc.total_extent_count = updated_list_size;
+    ct3d->dc.shared_info->total_extent_count = updated_list_size;
 
     return CXL_MBOX_SUCCESS;
 }

@@ -19,6 +19,7 @@
 #include "hw/qdev-properties.h"
 #include "system/hostmem.h"
 #include "mhsld.h"
+#include "hw/cxl/cxl_extent.h"
 
 #define TYPE_CXL_MHSLD "cxl-mhsld"
 OBJECT_DECLARE_TYPE(CXLMHSLDState, CXLMHSLDClass, CXL_MHSLD)
@@ -175,10 +176,10 @@ static inline size_t cxl_mhsld_find_dc_region_start(PCIDevice *d,
     uint8_t rid;
 
     for (rid = 0; rid < dcd->dc.num_regions; ++rid) {
-        if (&dcd->dc.regions[rid] == r) {
+        if (&dcd->dc.shared_info->regions[rid] == r) {
             break;
         }
-        start += dcd->dc.regions[rid].len / dcd->dc.regions[rid].block_size;
+        start += dcd->dc.shared_info->regions[rid].len / dcd->dc.shared_info->regions[rid].block_size;
     }
 
     return start;
@@ -221,7 +222,7 @@ static bool cxl_mhsld_reserve_extents(PCIDevice *d,
     CxlDynamicCapacityExtentList *list = records, *rollback = NULL;
 
     CXLType3Dev *ct3d = CXL_TYPE3(d);
-    CXLDCRegion *region = &ct3d->dc.regions[rid];
+    CXLDCRegion *region = &ct3d->dc.shared_info->regions[rid];
 
     for (; list; list = list->next) {
         len = list->value->len / MHSLD_BLOCK_SZ;
@@ -256,14 +257,14 @@ static bool cxl_mhsld_reclaim_extents(PCIDevice *d,
 {
     CXLMHSLDState *s = CXL_MHSLD(d);
     CXLType3Dev *ct3d = CXL_TYPE3(d);
-    CXLDCExtentGroup *ext_group = QTAILQ_FIRST(ext_groups);
-    CXLDCExtent *ent;
+    CXLDCExtentGroup *ext_group = ext_groups[0];
+    CXLDCExtent *ent, *next = NULL;
     CXLDCRegion *region;
     g_autofree unsigned long *blk_bitmap = NULL;
     uint64_t dpa, off, len, size, i;
 
     /* Get the DCD region via the first requested extent */
-    ent = QTAILQ_FIRST(&ext_group->list);
+    ent = &ct3d->dc.shared_info->extent_pool[ext_group->list.head];
     dpa = ent->start_dpa;
     len = ent->len;
     region = cxl_find_dc_region(ct3d, dpa, len);
@@ -271,7 +272,7 @@ static bool cxl_mhsld_reclaim_extents(PCIDevice *d,
     blk_bitmap = bitmap_new(size);
 
     /* Set all requested extents to 1 in a bitmap */
-    QTAILQ_FOREACH(ent, &ext_group->list, node) {
+    EXTENTLIST_FOREACH(ent, next, &ext_group->list, ct3d) {
         off = ent->start_dpa - region->base;
         len = ent->len;
         bitmap_set(blk_bitmap, off / MHSLD_BLOCK_SZ, len / MHSLD_BLOCK_SZ);

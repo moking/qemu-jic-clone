@@ -76,6 +76,8 @@
 /* CXL r3.1 Section 8.2.8.2: CXL Device Capability Header Register */
 #define CXL_DEVICE_CAP_REG_SIZE 0x10
 
+/* Max number of DC extents supported by the DCD device */
+#define CXL_NUM_EXTENTS_SUPPORTED 512
 /*
  * CXL r3.1 Section 8.2.8.2.1: CXL Device Capabilities +
  * CXL r3.1 Section 8.2.8.5: Memory Device Capabilities
@@ -574,15 +576,19 @@ typedef struct CXLDCExtent {
     uint16_t shared_seq;
     uint8_t rsvd[0x6];
 
-    QTAILQ_ENTRY(CXLDCExtent) node;
+    int next;
 } CXLDCExtent;
-typedef QTAILQ_HEAD(, CXLDCExtent) CXLDCExtentList;
+
+typedef struct {
+    int head;
+    int tail;
+}CXLDCExtentList;
 
 typedef struct CXLDCExtentGroup {
     CXLDCExtentList list;
-    QTAILQ_ENTRY(CXLDCExtentGroup) node;
 } CXLDCExtentGroup;
-typedef QTAILQ_HEAD(, CXLDCExtentGroup) CXLDCExtentGroupList;
+
+typedef CXLDCExtentGroup* CXLDCExtentGroupList;
 
 /*
  * CXL r3.1 Table 8-168: Add Dynamic Capacity Response Input Payload
@@ -703,13 +709,25 @@ struct CXLType3Dev {
          * memory region size.
          */
         uint64_t total_capacity; /* 256M aligned */
-        CXLDCExtentList extents;
-        CXLDCExtentGroupList extents_pending;
-        uint32_t total_extent_count;
-        uint32_t ext_list_gen_seq;
+        struct {
+            /* Store the index of the first extent */
+            CXLDCExtentList extents;
+            /*
+             * Store the inex of the head of a extent group,
+             * hard-coded to have at most 5 groups.
+             */
+            #define MAX_NUM_PENDING_GROUPS 5
+            CXLDCExtentGroup pending_groups[MAX_NUM_PENDING_GROUPS];
+            CXLDCExtent extent_pool[CXL_NUM_EXTENTS_SUPPORTED];
+            /* Each bit indicates where the extent at the location is used or not */
+            unsigned long extent_pool_bm[CXL_NUM_EXTENTS_SUPPORTED/sizeof(unsigned long)];
+            uint32_t total_extent_count;
+            uint32_t num_pending_groups; /* Should be no larger than MAX_NUM_PENDING_GROUPS */
+            uint32_t ext_list_gen_seq;
 
+            CXLDCRegion regions[DCD_MAX_NUM_REGION];
+        } *shared_info;
         uint8_t num_regions; /* 0-8 regions */
-        CXLDCRegion regions[DCD_MAX_NUM_REGION];
     } dc;
 
     struct CXLSanitizeInfo *media_op_sanitize;
@@ -790,23 +808,8 @@ void cxl_clear_poison_list_overflowed(CXLType3Dev *ct3d);
 
 CXLDCRegion *cxl_find_dc_region(CXLType3Dev *ct3d, uint64_t dpa, uint64_t len);
 
-void cxl_remove_extent_from_extent_list(CXLDCExtentList *list,
-                                        CXLDCExtent *extent);
-void cxl_insert_extent_to_extent_list(CXLDCExtentList *list, uint64_t dpa,
-                                      uint64_t len, uint8_t *tag,
-                                      uint16_t shared_seq);
 bool test_any_bits_set(const unsigned long *addr, unsigned long nr,
                        unsigned long size);
-bool cxl_extents_contains_dpa_range(CXLDCExtentList *list,
-                                    uint64_t dpa, uint64_t len);
-CXLDCExtentGroup *cxl_insert_extent_to_extent_group(CXLDCExtentGroup *group,
-                                                    uint64_t dpa,
-                                                    uint64_t len,
-                                                    uint8_t *tag,
-                                                    uint16_t shared_seq);
-void cxl_extent_group_list_insert_tail(CXLDCExtentGroupList *list,
-                                       CXLDCExtentGroup *group);
-void cxl_extent_group_list_delete_front(CXLDCExtentGroupList *list);
 void ct3_set_region_block_backed(CXLType3Dev *ct3d, uint64_t dpa,
                                  uint64_t len);
 void ct3_clear_region_block_backed(CXLType3Dev *ct3d, uint64_t dpa,
