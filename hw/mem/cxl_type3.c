@@ -1614,6 +1614,47 @@ void cxl_clear_poison_list_overflowed(CXLType3Dev *ct3d)
     ct3d->poison_list_overflow_ts = 0;
 }
 
+void qmp_cxl_process_mctp_message(const char *cci_name, Error **errp)
+{
+    int i;
+    struct CXLCCINamePtrMap *map;
+    struct CXLMCTPCommandBuf *buf;
+    CXLCCI *cci = NULL;
+    CXLType3Dev *ct3d;
+
+    if (!cci_map_buf) {
+        error_setg(errp, "CCI name mapping buffer not setup");
+        return;
+    }
+
+    for (i = 0; i < cci_map_buf->num_mappings; i++) {
+        map = &cci_map_buf->maps[i];
+        if (!strcmp(map->cci_name, cci_name)) {
+            cci = (CXLCCI *) map->cci_pointer;
+            break;
+        }
+    }
+    if (!cci) {
+        error_setg(errp, "CCI instance is not found with name: %s", cci_name);
+        return;
+    }
+    ct3d = CXL_TYPE3(OBJECT(cci->d));
+    if (!ct3d) {
+        error_setg(errp, "No Type3 device associated with the cci");
+        return;
+    }
+    if (ct3d->mctp_shared_buffer->status != 1) {
+        error_setg(errp, "MCTP buffer status is not set to 1, skip");
+        return;
+    }
+    buf = &ct3d->mctp_shared_buffer->command_buf;
+    buf->ret_val = cxl_process_cci_message(cci, buf->command_set, buf->command,
+                                           buf->len_in, buf->payload,
+                                           &buf->len_out, buf->payload_out,
+                                           &buf->bg_started);
+    ct3d->mctp_shared_buffer->status = 0;
+}
+
 void qmp_cxl_inject_poison(const char *path, uint64_t start, uint64_t length,
                            Error **errp)
 {

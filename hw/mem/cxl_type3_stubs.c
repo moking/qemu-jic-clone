@@ -92,3 +92,8 @@ void qmp_cxl_release_dynamic_capacity(const char *path, uint16_t host_id,
 {
     error_setg(errp, "CXL Type 3 support is not compiled in");
 }
+
+void qmp_cxl_process_mctp_message(const char *cci_name, Error **errp)
+{
+    error_setg(errp, "CXL Type 3 support is not compiled in");
+}

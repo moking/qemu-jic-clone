@@ -553,3 +553,21 @@
            },
   'features': [ 'unstable' ]
 }
+
+##
+# @cxl-process-mctp-message:
+#
+# Command to process a MCTP command sent from another VM.
+#
+# @cci-name: name of the CCI to process the command;
+#
+# Features:
+#
+# @unstable: For now this command is subject to change.
+#
+# Since: 9.1
+##
+{'command': 'cxl-process-mctp-message',
+ 'data': {'cci-name': 'str'},
+  'features': [ 'unstable' ]
+ }
