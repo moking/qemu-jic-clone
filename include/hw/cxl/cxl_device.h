@@ -810,4 +810,6 @@ void ct3_clear_region_block_backed(CXLType3Dev *ct3d, uint64_t dpa,
                                    uint64_t len);
 bool ct3_test_region_block_backed(CXLType3Dev *ct3d, uint64_t dpa,
                                   uint64_t len);
+int ct3_setup_mctp_command_share_buffer(CXLType3Dev *ct3d, bool create);
+int init_cci_name_ptr_mapping(void);
 #endif

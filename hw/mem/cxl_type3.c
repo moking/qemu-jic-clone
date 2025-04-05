@@ -1051,7 +1051,7 @@ static int ct3_mctp_buf_create(const char *filename, size_t size)
     return fd;
 }
 
-static int ct3_setup_mctp_command_share_buffer(CXLType3Dev *ct3d, bool create)
+int ct3_setup_mctp_command_share_buffer(CXLType3Dev *ct3d, bool create)
 {
     int fd;
     int size = sizeof(*ct3d->mctp_shared_buffer);
@@ -1074,7 +1074,7 @@ static int ct3_setup_mctp_command_share_buffer(CXLType3Dev *ct3d, bool create)
     return -1;
 }
 
-static int init_cci_name_ptr_mapping(void)
+int init_cci_name_ptr_mapping(void)
 {
     if (!cci_map_buf) {
         cci_map_buf = g_malloc(sizeof(*cci_map_buf));
