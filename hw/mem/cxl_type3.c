@@ -30,6 +30,9 @@
 #include "system/numa.h"
 #include "hw/cxl/cxl.h"
 #include "hw/pci/msix.h"
+#include "hw/cxl/cxl_mctp_message.h"
+
+struct CXLCCINamePtrMaps *cci_map_buf;
 
 /* type3 device private */
 enum CXL_T3_MSIX_VECTOR {
@@ -1003,6 +1006,97 @@ static void init_alert_config(CXLType3Dev *ct3d)
     };
 }
 
+static int ct3_mctp_buf_open(const char *filename, int flags)
+{
+    char name[128];
+    snprintf(name, sizeof(name), "/%s", filename);
+    return shm_open(name, flags, 0666);
+}
+
+static int ct3_mctp_buf_unlink(const char *filename)
+{
+    char name[128];
+    snprintf(name, sizeof(name), "/%s", filename);
+    return shm_unlink(name);
+}
+
+static struct CXLMCTPSharedBuf *ct3_mctp_buf_map(int fd, int size)
+{
+    void *map;
+
+    if (fd < 0) {
+        return NULL;
+    }
+
+    map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) {
+        return NULL;
+    }
+
+    return (CXLMCTPSharedBuf *)map;
+}
+
+
+static int ct3_mctp_buf_create(const char *filename, size_t size)
+{
+    int fd, rc;
+
+    fd = ct3_mctp_buf_open(filename, O_RDWR | O_CREAT);
+    if (fd == -1) {
+        return -1;
+    }
+
+    rc = ftruncate(fd, size);
+
+    if (rc) {
+        close(fd);
+        return -1;
+    }
+
+    return fd;
+}
+
+static int ct3_setup_mctp_command_share_buffer(CXLType3Dev *ct3d, bool create)
+{
+    int fd;
+    int size = sizeof(*ct3d->mctp_shared_buffer);
+    sprintf(ct3d->mctp_buf_name, MCTP_MESSAGE_BUF_NAME);
+
+    if (create) {
+        fd = ct3_mctp_buf_create(ct3d->mctp_buf_name, size);
+    } else {
+        fd = ct3_mctp_buf_open(ct3d->mctp_buf_name, O_RDWR | O_CREAT);
+    }
+
+    if (fd == -1) {
+        return fd;
+    }
+    ct3d->mctp_buf_fd = fd;
+    ct3d->mctp_shared_buffer = ct3_mctp_buf_map(ct3d->mctp_buf_fd, size);
+    if (ct3d->mctp_shared_buffer) {
+        return 0;
+    }
+    return -1;
+}
+
+static int init_cci_name_ptr_mapping(void)
+{
+    if (!cci_map_buf) {
+        cci_map_buf = g_malloc(sizeof(*cci_map_buf));
+    }
+    return 0;
+}
+
+static void add_cci_name_ptr_mapping(const char *name, void *p)
+{
+    int n = cci_map_buf->num_mappings;
+    struct CXLCCINamePtrMap *map = &cci_map_buf->maps[n];
+
+    strcpy(map->cci_name, name);
+    map->cci_pointer = p;
+    cci_map_buf->num_mappings++;
+}
+
 void ct3_realize(PCIDevice *pci_dev, Error **errp)
 {
     ERRP_GUARD();
@@ -1113,6 +1207,14 @@ void ct3_realize(PCIDevice *pci_dev, Error **errp)
         ct3d->ecs_attrs.fru_attrs[count].ecs_flags = 0;
     }
 
+    if (ct3d->allow_fm_attach) {
+        init_cci_name_ptr_mapping();
+        if (ct3d->mctp_buf_init) {
+            ct3_setup_mctp_command_share_buffer(ct3d, true);
+        } else {
+            ct3_setup_mctp_command_share_buffer(ct3d, false);
+        }
+    }
     return;
 
 err_release_cdat:
@@ -1155,6 +1257,15 @@ void ct3_exit(PCIDevice *pci_dev)
     if (ct3d->hostvmem) {
         address_space_destroy(&ct3d->hostvmem_as);
     }
+
+    if (ct3d->mctp_shared_buffer) {
+        munmap(ct3d->mctp_shared_buffer, sizeof(*ct3d->mctp_shared_buffer));
+        close(ct3d->mctp_buf_fd);
+        ct3_mctp_buf_unlink(ct3d->mctp_buf_name);
+        ct3d->mctp_shared_buffer = NULL;
+    }
+    g_free(cci_map_buf);
+    cci_map_buf = NULL;
 }
 
 /*
@@ -1357,6 +1468,16 @@ void ct3d_reset(DeviceState *dev)
     }
     cxl_initialize_t3_ld_cci(&ct3d->ld0_cci, DEVICE(ct3d), DEVICE(ct3d),
                              512); /* Max payload made up */
+    if (ct3d->allow_fm_attach) {
+        char name[64];
+
+        memset(name, 0, 64);
+        sprintf(name, "%lu:%s", ct3d->sn, "oob_mctp_cci");
+        add_cci_name_ptr_mapping(name, &ct3d->oob_mctp_cci);
+        cxl_initialize_t3_fm_owned_ld_mctpcci(&ct3d->oob_mctp_cci,
+                                              DEVICE(ct3d), DEVICE(ct3d),
+                                              MCTP_CXL_MAILBOX_BYTES);
+    }
 }
 
 static const Property ct3_props[] = {
@@ -1377,7 +1498,9 @@ static const Property ct3_props[] = {
                                 speed, PCIE_LINK_SPEED_32),
     DEFINE_PROP_PCIE_LINK_WIDTH("x-width", CXLType3Dev,
                                 width, PCIE_LINK_WIDTH_16),
-    DEFINE_PROP_UINT16("chmu-port", CXLType3Dev, cxl_dstate.chmu[0].port, 0), 
+    DEFINE_PROP_UINT16("chmu-port", CXLType3Dev, cxl_dstate.chmu[0].port, 0),
+    DEFINE_PROP_BOOL("allow-fm-attach", CXLType3Dev, allow_fm_attach, false),
+    DEFINE_PROP_BOOL("mctp-buf-init", CXLType3Dev, mctp_buf_init, false),
 };
 
 static uint64_t get_lsa_size(CXLType3Dev *ct3d)

@@ -709,6 +709,12 @@ struct CXLType3Dev {
     } dc;
 
     struct CXLSanitizeInfo *media_op_sanitize;
+
+    bool allow_fm_attach;
+    bool mctp_buf_init;
+    struct CXLMCTPSharedBuf *mctp_shared_buffer;
+    char mctp_buf_name[64];
+    int mctp_buf_fd;
 };
 
 #define TYPE_CXL_TYPE3 "cxl-type3"
