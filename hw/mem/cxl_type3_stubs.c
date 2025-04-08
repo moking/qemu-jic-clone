@@ -104,3 +104,8 @@ void qmp_cxl_display_pending_to_add_dc_extents(const char *path, const char *f,
 {
     error_setg(errp, "CXL Type 3 support is not compiled in");
 }
+
+void qmp_cxl_process_mctp_message(const char *cci_name, Error **errp)
+{
+    error_setg(errp, "CXL Type 3 support is not compiled in");
+}
