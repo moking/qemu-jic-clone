@@ -37,4 +37,7 @@ struct CXLMCTPSharedBuf {
 
 typedef struct CXLMCTPSharedBuf CXLMCTPSharedBuf;
 extern struct CXLCCINamePtrMaps *cci_map_buf;
+int setup_mctp_qmp_connection(const char *qmp_str);
+void read_qmp_response(int sockfd);
+void qmp_cxl_mctp_process_cci_message(const int sockfd, const char *cci_name);
 #endif

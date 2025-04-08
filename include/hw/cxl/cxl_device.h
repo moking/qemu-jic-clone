@@ -819,4 +819,6 @@ bool cxl_extents_overlaps_dpa_range(CXLDCExtentList *list,
                                     uint64_t dpa, uint64_t len);
 bool cxl_extent_groups_overlaps_dpa_range(CXLDCExtentGroupList *list,
                                           uint64_t dpa, uint64_t len);
+int ct3_setup_mctp_command_share_buffer(CXLType3Dev *ct3d, bool create);
+int init_cci_name_ptr_mapping(void);
 #endif

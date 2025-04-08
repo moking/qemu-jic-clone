@@ -29,6 +29,7 @@
 #include "hw/pci/pcie_port.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
+#include "hw/cxl/cxl_mctp_message.h"
 
 #define TYPE_I2C_MCTP_CXL "i2c_mctp_cxl"
 
@@ -86,6 +87,10 @@ struct I2C_MCTP_CXL_State {
     int64_t pos;
     uint8_t buffer[MCTP_CXL_MAX_MSG_LEN];
     uint8_t scratch[MCTP_CXL_MAX_MSG_LEN];
+    char *qmp_str;
+    int qmp_fd;
+
+    bool mctp_msg_forward;
 };
 
 OBJECT_DECLARE_SIMPLE_TYPE(I2C_MCTP_CXL_State, I2C_MCTP_CXL)
@@ -93,6 +98,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(I2C_MCTP_CXL_State, I2C_MCTP_CXL)
 static const Property i2c_mctp_cxl_props[] = {
     DEFINE_PROP_LINK("target", I2C_MCTP_CXL_State,
                      target, TYPE_PCI_DEVICE, PCIDevice *),
+    DEFINE_PROP_STRING("qmp", I2C_MCTP_CXL_State, qmp_str),
+    DEFINE_PROP_BOOL("mctp-msg-forward", I2C_MCTP_CXL_State,
+                     mctp_msg_forward, false),
 };
 
 static size_t i2c_mctp_cxl_get_buf(MCTPI2CEndpoint *mctp,
@@ -215,12 +223,46 @@ static void i2c_mctp_cxl_handle_message(MCTPI2CEndpoint *mctp)
 
         len_in = msg->pl_length[2] << 16 | msg->pl_length[1] << 8 |
             msg->pl_length[0];
+        if (s->mctp_msg_forward) {
+            CXLType3Dev *ct3d = CXL_TYPE3(s->target);
+            CXLMCTPCommandBuf *mctp_buf;
+            int i;
+            char *cci_name = NULL;
 
-        rc = cxl_process_cci_message(s->cci, msg->command_set, msg->command,
-                                     len_in, msg->payload,
-                                     &len_out,
-                                     s->scratch + sizeof(CXLMCTPMessage),
-                                     &bg_started);
+            g_assert(cci_map_buf);
+            g_assert(ct3d->mctp_shared_buffer);
+
+            for (i = 0; i < cci_map_buf->num_mappings; i++) {
+                if (cci_map_buf->maps[i].cci_pointer == s->cci) {
+                    break;
+                }
+            }
+
+            g_assert(i < cci_map_buf->num_mappings);
+            cci_name = cci_map_buf->maps[i].cci_name;
+
+            mctp_buf = &ct3d->mctp_shared_buffer->command_buf;
+            g_assert(mctp_buf);
+
+            mctp_buf->command_set = msg->command_set;
+            mctp_buf->command = msg->command;
+            mctp_buf->len_in = len_in;
+            memcpy(mctp_buf->payload, msg->payload, len_in);
+            ct3d->mctp_shared_buffer->status = 1;
+            qmp_cxl_mctp_process_cci_message(s->qmp_fd, cci_name);
+            if (mctp_buf->len_out) {
+                memcpy(s->scratch + sizeof(CXLMCTPMessage),
+                       mctp_buf->payload_out, mctp_buf->len_out);
+            }
+            rc = mctp_buf->ret_val;
+            len_out = mctp_buf->len_out;
+        } else {
+            rc = cxl_process_cci_message(s->cci, msg->command_set, msg->command,
+                                         len_in, msg->payload,
+                                         &len_out,
+                                         s->scratch + sizeof(CXLMCTPMessage),
+                                         &bg_started);
+        }
         buf->rc = rc;
         s->pos += len_out;
         s->len = s->pos;
@@ -257,6 +299,20 @@ static void i2c_mctp_cxl_realize(DeviceState *d, Error **errp)
 
         cxl_initialize_t3_fm_owned_ld_mctpcci(s->cci, DEVICE(s->target), d,
                                               MCTP_CXL_MAILBOX_BYTES);
+        if (s->mctp_msg_forward) {
+            g_assert(s->qmp_str);
+            s->qmp_fd = setup_mctp_qmp_connection(s->qmp_str);
+            if (s->qmp_fd < 0) {
+                error_setg(errp, "setup connection to qmp server failed");
+            } else {
+                read_qmp_response(s->qmp_fd);
+            }
+
+            init_cci_name_ptr_mapping();
+            ct3_setup_mctp_command_share_buffer(ct3d, false);
+        } else {
+            s->qmp_fd = -1;
+        }
         return;
     }
 
